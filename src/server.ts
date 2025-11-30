@@ -1,5 +1,5 @@
 import express, { Express, Request, Response, ErrorRequestHandler } from 'express';
-import mongoose from 'mongoose';
+// MongoDB removed - using PostgreSQL via Prisma if needed
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
@@ -21,10 +21,8 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json());
 
-const MONGO_URI: string = process.env.MONGO_URI || 'mongodb://mongodb:27017/deepiri';
-mongoose.connect(MONGO_URI)
-  .then(() => logger.info('External Bridge Service: Connected to MongoDB'))
-  .catch((err: Error) => logger.error('External Bridge Service: MongoDB connection error', err));
+// PostgreSQL connection via Prisma (if needed for webhook/integration storage)
+// For now, external bridge primarily handles webhooks and API integrations
 
 app.get('/health', (req: Request, res: Response) => {
   res.json({ status: 'healthy', service: 'external-bridge-service', timestamp: new Date().toISOString() });
