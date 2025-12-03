@@ -1,7 +1,7 @@
 # Build shared-utils first
 FROM node:18-alpine AS shared-utils-builder
 WORKDIR /shared-utils
-COPY shared/deepiri-shared-utils/package*.json ./
+COPY shared/deepiri-shared-utils/package.json ./
 COPY shared/deepiri-shared-utils/tsconfig.json ./
 COPY shared/deepiri-shared-utils/src ./src
 RUN npm install --legacy-peer-deps && npm run build
@@ -14,7 +14,7 @@ WORKDIR /app
 RUN apk add --no-cache curl dumb-init
 
 # Copy package files
-COPY backend/deepiri-external-bridge-service/package*.json ./
+COPY backend/deepiri-external-bridge-service/package.json ./
 COPY backend/deepiri-external-bridge-service/tsconfig.json ./
 
 # Copy built shared-utils to a temp location
