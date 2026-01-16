@@ -4,6 +4,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
 import winston from 'winston';
+import cookieParser from 'cookie-parser';
 import routes from './index';
 
 dotenv.config();
@@ -19,6 +20,7 @@ const logger = winston.createLogger({
 
 app.use(helmet());
 app.use(cors());
+app.use(cookieParser());
 app.use(express.json());
 
 // PostgreSQL connection via Prisma (if needed for webhook/integration storage)
