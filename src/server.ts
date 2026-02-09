@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import { logger, secureLog } from '@deepiri/shared-utils';
 import cookieParser from 'cookie-parser';
 import routes from './index';
+import { validateBodyIfPresent } from './middleware/inputValidation';
 
 dotenv.config();
 
@@ -15,7 +16,8 @@ const PORT: number = parseInt(process.env.PORT || '5006', 10);
 app.use(helmet());
 app.use(cors());
 app.use(cookieParser());
-app.use(express.json());
+app.use(express.json({ limit: '100kb' }));
+app.use(validateBodyIfPresent());
 
 // PostgreSQL connection via Prisma (if needed for webhook/integration storage)
 // For now, external bridge primarily handles webhooks and API integrations
