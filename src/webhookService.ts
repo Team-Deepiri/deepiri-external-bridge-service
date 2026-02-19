@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { Request, Response } from 'express';
-import { createLogger } from '@deepiri/shared-utils';
+import axios from 'axios';
+import { createLogger, secureLog } from '@deepiri/shared-utils';
 
 const logger = createLogger('webhook-service');
 
@@ -26,7 +27,7 @@ class WebhookService {
 
   registerHandler(provider: string, handler: WebhookHandler): void {
     this.webhookHandlers.set(provider, handler);
-    logger.info('Webhook handler registered', { provider });
+    secureLog('info', 'Webhook handler registered', { provider });
   }
 
   async receiveWebhook(req: Request, res: Response): Promise<void> {
@@ -38,7 +39,7 @@ class WebhookService {
       const result = await this.processWebhook(provider, payload, headers);
       res.json({ success: true, result });
     } catch (error: any) {
-      logger.error('Error receiving webhook:', error);
+      secureLog('error', 'Error receiving webhook:', error);
       res.status(500).json({ error: error.message || 'Webhook processing failed' });
     }
   }
@@ -49,7 +50,7 @@ class WebhookService {
       const history = this.getWebhookHistory(provider, 10);
       res.json({ provider, recentWebhooks: history });
     } catch (error: any) {
-      logger.error('Error getting status:', error);
+      secureLog('error', 'Error getting status:', error);
       res.status(500).json({ error: 'Failed to get status' });
     }
   }
@@ -57,10 +58,56 @@ class WebhookService {
   async initiateOAuth(req: Request, res: Response): Promise<void> {
     try {
       const { provider } = req.params;
-      // OAuth initiation logic
-      res.json({ message: `OAuth initiation for ${provider}`, url: `https://${provider}.com/oauth/authorize` });
+
+      if (provider !== 'google') {
+        res.status(400).json({ error: `OAuth provider '${provider}' not supported` });
+        return;
+      }
+
+      const clientId = process.env.GOOGLE_CLIENT_ID;
+      const baseUrl = process.env.EXTERNAL_BRIDGE_BASE_URL;
+
+      if (!clientId) {
+        secureLog('error', 'GOOGLE_CLIENT_ID not configured');
+        res.status(500).json({ error: 'GOOGLE_CLIENT_ID environment variable is required' });
+        return;
+      }
+
+      if (!baseUrl) {
+        secureLog('error', 'EXTERNAL_BRIDGE_BASE_URL not configured');
+        res.status(500).json({ error: 'EXTERNAL_BRIDGE_BASE_URL environment variable is required' });
+        return;
+      }
+
+      // Build redirect URI from environment variable
+      const redirectUri = `${baseUrl}/oauth/google/callback`;
+
+      // Generate random state for CSRF protection
+      const state = crypto.randomBytes(32).toString('hex');
+
+      // Store state in httpOnly cookie
+      const isProduction = process.env.NODE_ENV === 'production';
+      res.cookie('oauth_state', state, {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: isProduction,
+        maxAge: 600000 // 10 minutes
+      });
+
+      // Google OAuth authorization URL
+      const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      authUrl.searchParams.set('client_id', clientId);
+      authUrl.searchParams.set('redirect_uri', redirectUri);
+      authUrl.searchParams.set('response_type', 'code');
+      authUrl.searchParams.set('scope', 'openid email profile');
+      authUrl.searchParams.set('access_type', 'offline');
+      authUrl.searchParams.set('prompt', 'consent');
+      authUrl.searchParams.set('state', state);
+
+      secureLog('info', 'Redirecting to Google OAuth', { redirectUri });
+      res.redirect(authUrl.toString());
     } catch (error: any) {
-      logger.error('Error initiating OAuth:', error);
+      secureLog('error', 'Error initiating OAuth:', error);
       res.status(500).json({ error: 'OAuth initiation failed' });
     }
   }
@@ -68,12 +115,119 @@ class WebhookService {
   async handleOAuthCallback(req: Request, res: Response): Promise<void> {
     try {
       const { provider } = req.params;
-      const { code } = req.query;
-      // OAuth callback handling
-      res.json({ message: `OAuth callback for ${provider}`, code });
+
+      if (provider !== 'google') {
+        res.status(400).json({ error: `OAuth provider '${provider}' not supported` });
+        return;
+      }
+
+      const { code, state: queryState, error: oauthError } = req.query;
+
+      if (oauthError) {
+        secureLog('error', 'Google OAuth error', { error: oauthError });
+        res.status(400).json({ error: `OAuth error: ${oauthError}` });
+        return;
+      }
+
+      if (!code || typeof code !== 'string') {
+        res.status(400).json({ error: 'Authorization code is required' });
+        return;
+      }
+
+      // Verify CSRF state
+      const cookieState = req.cookies?.oauth_state;
+      if (!cookieState || !queryState || cookieState !== queryState) {
+        secureLog('error', 'OAuth state mismatch - possible CSRF attack', {
+          cookieState: !!cookieState,
+          queryState: !!queryState
+        });
+        res.status(401).json({ error: 'Invalid OAuth state - security check failed' });
+        return;
+      }
+
+      // Clear state cookie after verification
+      res.clearCookie('oauth_state');
+
+      const clientId = process.env.GOOGLE_CLIENT_ID;
+      const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+      const baseUrl = process.env.EXTERNAL_BRIDGE_BASE_URL;
+      
+      // AUTH_SERVICE_URL: use env var or default to docker service hostname (not localhost)
+      const authServiceUrl = process.env.AUTH_SERVICE_URL || 'http://auth-service:5001';
+
+      if (!clientId || !clientSecret) {
+        secureLog('error', 'Google OAuth credentials not configured');
+        res.status(500).json({ error: 'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables are required' });
+        return;
+      }
+
+      if (!baseUrl) {
+        secureLog('error', 'EXTERNAL_BRIDGE_BASE_URL not configured');
+        res.status(500).json({ error: 'EXTERNAL_BRIDGE_BASE_URL environment variable is required' });
+        return;
+      }
+
+      // Build redirect URI from environment variable (must match authorize)
+      const redirectUri = `${baseUrl}/oauth/google/callback`;
+
+      // Exchange authorization code for tokens
+      secureLog('info', 'Exchanging authorization code for tokens');
+      const tokenParams = new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code'
+      });
+
+      const tokenResponse = await axios.post(
+        'https://oauth2.googleapis.com/token',
+        tokenParams.toString(),
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        }
+      );
+
+      const { id_token } = tokenResponse.data;
+
+      if (!id_token) {
+        secureLog('error', 'No id_token in token response');
+        res.status(500).json({ error: 'Failed to obtain ID token from Google' });
+        return;
+      }
+
+      // Forward id_token to auth-service
+      secureLog('info', 'Forwarding ID token to auth-service', { authServiceUrl });
+      const authResponse = await axios.post(`${authServiceUrl}/auth/google`, {
+        idToken: id_token
+      }, {
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+
+      // Return auth-service response to frontend
+      res.json(authResponse.data);
     } catch (error: any) {
-      logger.error('Error handling OAuth callback:', error);
-      res.status(500).json({ error: 'OAuth callback failed' });
+      secureLog('error', 'Error handling OAuth callback:', error);
+
+      // Clear state cookie on error
+      res.clearCookie('oauth_state');
+
+      if (error.response) {
+        // Forward error from auth-service if available
+        const status = error.response.status || 500;
+        const message = error.response.data?.error || error.message || 'OAuth callback failed';
+        res.status(status).json({ error: message });
+      } else if (error.request) {
+        // Network error (auth-service unreachable)
+        res.status(503).json({ error: 'Auth service unavailable' });
+      } else {
+        // Other error
+        res.status(500).json({ error: 'OAuth callback failed' });
+      }
     }
   }
 
@@ -101,10 +255,10 @@ class WebhookService {
         this.webhookHistory.shift();
       }
 
-      logger.info('Webhook processed', { provider, success: !!result });
+      secureLog('info', 'Webhook processed', { provider, success: !!result });
       return result;
     } catch (error) {
-      logger.error('Error processing webhook:', error);
+      secureLog('error', 'Error processing webhook:', error);
       throw error;
     }
   }
@@ -121,11 +275,11 @@ class WebhookService {
         case 'push':
           return await this._handleGitHubPush(payload);
         default:
-          logger.warn('Unhandled GitHub event', { event });
+          secureLog('warn', 'Unhandled GitHub event', { event });
           return { processed: false, event };
       }
     } catch (error) {
-      logger.error('Error handling GitHub webhook:', error);
+      secureLog('error', 'Error handling GitHub webhook:', error);
       throw error;
     }
   }
@@ -138,7 +292,7 @@ class WebhookService {
         data: payload.data
       };
     } catch (error) {
-      logger.error('Error handling Notion webhook:', error);
+      secureLog('error', 'Error handling Notion webhook:', error);
       throw error;
     }
   }
@@ -156,7 +310,7 @@ class WebhookService {
           return { processed: false, type: action.type };
       }
     } catch (error) {
-      logger.error('Error handling Trello webhook:', error);
+      secureLog('error', 'Error handling Trello webhook:', error);
       throw error;
     }
   }
