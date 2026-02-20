@@ -7,6 +7,7 @@ import cookieParser from 'cookie-parser';
 import routes from './index';
 import kafkaProducerService from './kafka/producer';
 import { HealthCheckService, MetricsService } from './kafka/health';
+import { validateBodyIfPresent } from './middleware/inputValidation';
 
 dotenv.config();
 
@@ -46,7 +47,8 @@ const initializeServices = async () => {
 app.use(helmet());
 app.use(cors());
 app.use(cookieParser());
-app.use(express.json());
+app.use(express.json({ limit: '100kb' }));
+app.use(validateBodyIfPresent());
 
 /**
  * GET /metrics
