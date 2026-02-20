@@ -1,15 +1,9 @@
 import crypto from 'crypto';
 import { Request, Response } from 'express';
 import axios from 'axios';
-import { v4 as uuidv4 } from 'uuid';
-import winston from 'winston';
-import kafkaProducerService from './kafka/producer';
+import { createLogger } from '@deepiri/shared-utils';
 
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.json(),
-  transports: [new winston.transports.Console({ format: winston.format.simple() })]
-});
+const logger = createLogger('webhook-service');
 
 interface WebhookHandler {
   (payload: any, headers: Record<string, string>): Promise<any>;
@@ -37,104 +31,16 @@ class WebhookService {
   }
 
   async receiveWebhook(req: Request, res: Response): Promise<void> {
-    const correlationId = uuidv4();
-    const eventId = uuidv4();
-    const { provider } = req.params;
-    const payload = req.body;
-    const headers = req.headers as Record<string, string>;
-    const startTime = Date.now();
-
     try {
-      logger.info('Webhook received', {
-        event_id: eventId,
-        correlation_id: correlationId,
-        provider
-      });
+      const { provider } = req.params;
+      const payload = req.body;
+      const headers = req.headers as Record<string, string>;
 
-      // Validate webhook signature
-      if (headers['x-signature'] && !this._verifySignature(provider, payload, headers['x-signature'])) {
-        return void res.status(401).json({
-          event_id: eventId,
-          correlation_id: correlationId,
-          error: 'Invalid webhook signature'
-        });
-      }
-
-      // Build event for Kafka
-      const integrationId = `${provider}_${payload.account_id || payload.organization_id || 'default'}`;
-      const kafkaEvent = {
-        event_id: eventId,
-        correlation_id: correlationId,
-        provider: provider,
-        provider_event_id: payload.id || `${provider}-${Date.now()}`,
-        provider_event_type: payload.type || headers['x-github-event'] || headers['x-trello-webhook-trigger'] || 'unknown',
-        integration_id: integrationId,
-        received_at: new Date().toISOString(),
-        payload: payload,
-        source_ip: req.ip || 'unknown'
-      };
-
-      /**
-       * KAFKA INTEGRATION PATTERN: Producer (non-blocking)
-       * 
-       * We don't await the Kafka publish. This is the "fire-and-forget" pattern:
-       * 1. Return 202 Accepted immediately to the webhook sender
-       * 2. Publish to Kafka in the background
-       * 3. If publish fails, it's logged but doesn't affect the HTTP response
-       * 
-       * Why? The webhook sender expects a quick response (< 5s usually).
-       * Our consumer workers will process the message from Kafka asynchronously.
-       * This decouples the webhook ingestion from processing.
-       */
-      kafkaProducerService
-        .publishEvent('integration.webhook.received', kafkaEvent, integrationId)
-        .catch(error => {
-          logger.error('Failed to publish webhook to Kafka', {
-            event_id: eventId,
-            correlation_id: correlationId,
-            provider,
-            error: error instanceof Error ? error.message : String(error)
-          });
-          // Note: Can't change HTTP response here; already sent 202
-        });
-
-      // Record in history for quick access
-      this.webhookHistory.push({
-        provider,
-        payload,
-        result: { event_id: eventId, correlation_id: correlationId, status: 'queued' },
-        timestamp: new Date()
-      });
-
-      if (this.webhookHistory.length > 1000) {
-        this.webhookHistory.shift();
-      }
-
-      const processingTime = Date.now() - startTime;
-
-      // Return 202 Accepted
-      res.status(202).json({
-        event_id: eventId,
-        correlation_id: correlationId,
-        status: 'accepted',
-        message: 'Webhook received and queued for processing',
-        processing_time_ms: processingTime
-      });
-
-      logger.info('Webhook accepted and queued', {
-        event_id: eventId,
-        correlation_id: correlationId,
-        provider,
-        processing_time_ms: processingTime
-      });
+      const result = await this.processWebhook(provider, payload, headers);
+      res.json({ success: true, result });
     } catch (error: any) {
       logger.error('Error receiving webhook:', error);
-      const statusCode = error.message?.includes('not supported') ? 400 : 500;
-      res.status(statusCode).json({
-        event_id: uuidv4(),
-        correlation_id: correlationId,
-        error: error.message || 'Webhook processing failed'
-      });
+      res.status(500).json({ error: error.message || 'Webhook processing failed' });
     }
   }
 
