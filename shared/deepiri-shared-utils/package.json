@@ -1,0 +1,15 @@
+{
+  "name": "@deepiri/shared-utils",
+  "version": "0.0.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "winston": "^3.13.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

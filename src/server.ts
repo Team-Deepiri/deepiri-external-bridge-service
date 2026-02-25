@@ -7,6 +7,7 @@ import { logger, secureLog } from '@deepiri/shared-utils';
 import cookieParser from 'cookie-parser';
 import routes from './index';
 import { validateBodyIfPresent } from './middleware/inputValidation';
+import kafkaProducerService from './kafka/producer';
 
 dotenv.config();
 
@@ -34,9 +35,56 @@ const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
 };
 app.use(errorHandler);
 
-app.listen(PORT, () => {
-  secureLog('info', `External Bridge Service running on port ${PORT}`);
-});
+const initializeServices = async (): Promise<boolean> => {
+  try {
+    // If your producer has connect/init method, call it.
+    // If not, skip this and rely on lazy connect in publishEvent.
+    if (typeof (kafkaProducerService as any).connect === 'function') {
+      await (kafkaProducerService as any).connect();
+    }
+    return true;
+  } catch (err) {
+    logger.error('Kafka producer failed to initialize', {
+      error: err instanceof Error ? err.message : String(err)
+    });
+    return false;
+  }
+};
 
+/**
+ * Start server with async initialization
+ */
+const startServer = async () => {
+  try {
+    const servicesReady = await initializeServices();
+    if (!servicesReady) {
+      logger.error('Critical services failed to initialize. Refusing to start server.');
+      process.exit(1);
+    }
+
+    const server = app.listen(PORT, () => {
+      logger.info(`External Bridge Service running on port ${PORT}`);
+      logger.info(`Metrics available at http://localhost:${PORT}/metrics`);
+      logger.info(`Health check at http://localhost:${PORT}/health`);
+    });
+
+    const shutdown = async (signal: string) => {
+      logger.info(`${signal} signal received: closing HTTP server`);
+      server.close(async () => {
+        logger.info('HTTP server closed');
+        await kafkaProducerService.disconnect();
+        process.exit(0);
+      });
+    };
+
+    process.on('SIGTERM', () => void shutdown('SIGTERM'));
+    process.on('SIGINT', () => void shutdown('SIGINT'));
+  } catch (error) {
+    logger.error('Failed to start server:', error);
+    process.exit(1);
+  }
+};
+
+startServer();
 export default app;
 
