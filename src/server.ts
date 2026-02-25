@@ -108,8 +108,12 @@ app.use(errorHandler);
  */
 const startServer = async () => {
   try {
-    // Initialize Kafka and other services
-    await initializeServices();
+    // Initialize Kafka and other services; hard-fail if they are unavailable
+    const servicesReady = await initializeServices();
+    if (!servicesReady) {
+      logger.error('Critical services failed to initialize. Refusing to start server.');
+      process.exit(1);
+    }
 
     const server = app.listen(PORT, () => {
       logger.info(`External Bridge Service running on port ${PORT}`);

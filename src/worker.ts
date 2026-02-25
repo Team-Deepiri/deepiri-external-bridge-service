@@ -52,15 +52,26 @@ async function handleWebhookEvent(event: Record<string, any>, headers: Record<st
     event_type: event.provider_event_type
   });
 
-  // Simulate processing
-  await new Promise(resolve => setTimeout(resolve, 100));
-
-  // TODO: Add your business logic here
-  // Examples:
-  // - Call external APIs (Salesforce, HubSpot, etc.)
-  // - Enrich webhook data with internal DB lookups
-  // - Trigger downstream sync jobs
-  // - Send notifications
+  // Route on provider and execute the appropriate business logic.
+  // Each branch should throw on transient failures so the consumer's
+  // retry loop (with exponential back-off) is exercised before the
+  // message is sent to the DLQ.
+  switch (provider) {
+    case 'github':
+      // TODO: implement GitHub webhook handling
+      // e.g. validate delivery HMAC, upsert PR/issue records, fire notifications
+      break;
+    case 'notion':
+      // TODO: implement Notion webhook handling
+      // e.g. sync page/database updates into internal store
+      break;
+    case 'trello':
+      // TODO: implement Trello webhook handling
+      // e.g. mirror card moves / label changes to internal board model
+      break;
+    default:
+      logger.warn('No handler registered for provider', { provider, event_id: eventId });
+  }
 
   logger.info('Webhook event processed successfully', {
     event_id: eventId,
@@ -82,10 +93,8 @@ async function handleSyncEvent(event: Record<string, any>, headers: Record<strin
     integration_id: integrationId
   });
 
-  // Simulate sync work
-  await new Promise(resolve => setTimeout(resolve, 500));
-
-  // TODO: Add your sync business logic
+  // TODO: implement sync business logic per integration type.
+  // Throw on transient failures so the consumer retry loop is exercised.
   // Examples:
   // - Fetch data from external system (Salesforce, HubSpot)
   // - Merge with internal state
@@ -135,11 +144,21 @@ async function main() {
 
     logger.info('Consumers initialized, starting to process messages...');
 
-    // Start consuming (these run indefinitely)
-    await Promise.all([
-      webhookConsumer.start(),
-      syncConsumer.start()
-    ]);
+    // Wire the DLQ producer so failed messages are published rather than dropped.
+    webhookConsumer.setDLQProducer(kafkaProducerService);
+    syncConsumer.setDLQProducer(kafkaProducerService);
+
+    // Fire-and-detach: consumer.start() runs an infinite KafkaJS polling loop
+    // and never resolves, so we must NOT await it here.  Errors are fatal —
+    // crash the process so the container orchestrator can restart it.
+    void webhookConsumer.start().catch((err: unknown) => {
+      logger.error('webhookConsumer crashed', { error: err instanceof Error ? err.message : err });
+      process.exit(1);
+    });
+    void syncConsumer.start().catch((err: unknown) => {
+      logger.error('syncConsumer crashed', { error: err instanceof Error ? err.message : err });
+      process.exit(1);
+    });
 
     // Setup Express endpoints for monitoring
     app.get('/health', async (req: Request, res: Response) => {
@@ -186,12 +205,20 @@ async function main() {
       logger.info(`Health check at http://localhost:${workerPort}/health`);
     });
 
-    // Graceful shutdown
+    // Graceful shutdown: stop consumers first so no new messages are
+    // accepted, then drain the HTTP server, then exit.
     const shutdown = async () => {
       logger.info('Shutting down worker service...');
-      server.close();
+
+      // 1. Stop Kafka consumers before closing the HTTP server so that
+      //    in-flight messages finish processing and are not re-queued.
       await webhookConsumer.stop();
       await syncConsumer.stop();
+
+      // 2. Stop accepting new HTTP requests.
+      await new Promise<void>(resolve => server.close(() => resolve()));
+
+      // 3. Clean exit.
       process.exit(0);
     };
 

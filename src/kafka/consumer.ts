@@ -1,4 +1,4 @@
-import { Kafka, Consumer, logLevel } from 'kafkajs';
+import { Kafka, Consumer, Admin, logLevel } from 'kafkajs';
 import { Counter, Histogram, Gauge } from 'prom-client';
 import { createClient } from 'redis';
 import winston from 'winston';
@@ -71,6 +71,7 @@ export interface EventHandler {
 export class KafkaConsumerService {
   private kafka: Kafka;
   private consumer: Consumer | null = null;
+  private admin: Admin | null = null;
   private redisClient = createClient({
     url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`
   });
@@ -87,6 +88,9 @@ export class KafkaConsumerService {
   private maxRetries = 3;
   private baseBackoffMs = 1000; // Start with 1 second
   private backoffMultiplier = 2; // exponential: 1s, 2s, 4s, etc
+
+  // Producer reference (injected) used only for DLQ publishing
+  private dlqProducer: { publishEvent: (topic: string, event: Record<string, any>, key: string) => Promise<void> } | null = null;
 
   constructor(groupId: string, concurrencyLimit: number = 10) {
     this.groupId = groupId;
@@ -117,6 +121,14 @@ export class KafkaConsumerService {
   }
 
   /**
+   * Inject a producer reference used exclusively for publishing to the DLQ topic.
+   * Call this before start() so DLQ publishing is available from the first message.
+   */
+  setDLQProducer(producer: { publishEvent: (topic: string, event: Record<string, any>, key: string) => Promise<void> }): void {
+    this.dlqProducer = producer;
+  }
+
+  /**
    * Initialize consumer and connect to Kafka + Redis
    */
   async init(topics: string[]): Promise<void> {
@@ -131,11 +143,15 @@ export class KafkaConsumerService {
         sessionTimeout: 30000,
         rebalanceTimeout: 60000,
         // Auto commit is disabled; we manually commit after processing
-        allowAutoTopicCreation: true
+        allowAutoTopicCreation: false
       });
 
       await this.consumer.connect();
       logger.info('Kafka consumer initialized and connected');
+
+      // Create admin client for consumer-lag polling
+      this.admin = this.kafka.admin();
+      await this.admin.connect();
 
       // Subscribe to topics
       await this.consumer.subscribe({
@@ -162,6 +178,36 @@ export class KafkaConsumerService {
 
     this.isRunning = true;
 
+    // Poll consumer lag every 15 seconds via the admin API.
+    // We compare committed offsets against the high-water mark for each
+    // partition to give an accurate real-time lag gauge.
+    const lagPoller = setInterval(async () => {
+      try {
+        if (!this.admin || !this.isRunning) return;
+
+        const offsets = await this.admin.fetchOffsets({ groupId: this.groupId, resolveOffsets: true });
+
+        for (const topicOffsets of offsets) {
+          // fetchTopicOffsets returns one PartitionOffset entry per partition
+          const topicHighWaterMarks = await this.admin!.fetchTopicOffsets(topicOffsets.topic);
+
+          for (const partition of topicOffsets.partitions) {
+            const hwm = topicHighWaterMarks.find(p => p.partition === partition.partition);
+
+            if (hwm) {
+              const lag = Math.max(0, parseInt(hwm.offset) - parseInt(partition.offset));
+              consumerMetrics.consumerLagCurrent
+                .labels(topicOffsets.topic, this.groupId, String(partition.partition))
+                .set(lag);
+            }
+          }
+        }
+      } catch (err) {
+        // Lag polling is best-effort; don't crash the consumer on failure
+        logger.warn('Failed to poll consumer lag:', err);
+      }
+    }, 15_000);
+
     try {
       await this.consumer.run({
         eachMessage: async ({ topic, partition, message }) => {
@@ -184,6 +230,7 @@ export class KafkaConsumerService {
 
       logger.info(`Consumer started for group: ${this.groupId}`);
     } catch (error) {
+      clearInterval(lagPoller);
       logger.error('Failed to start consumer:', error);
       throw error;
     }
@@ -220,20 +267,24 @@ export class KafkaConsumerService {
     try {
       const event = JSON.parse(message.value?.toString() || '{}');
 
-      // Step 1: Check idempotency (deduplication)
+      // Step 1: Atomic idempotency claim.
+      // SET NX (set-if-not-exists) is a single atomic Redis command, which
+      // eliminates the TOCTOU race that exists() + setEx() has when two
+      // workers receive the same message simultaneously.
+      const ttlSeconds = 24 * 60 * 60; // 24 hours
       const dedupeKey = `dedupe:${topic}:${eventId}`;
-      const isDuplicate = await this.redisClient.exists(dedupeKey);
+      const claimed = await this.redisClient.set(dedupeKey, 'processing', {
+        NX: true,      // only set if the key does not already exist
+        EX: ttlSeconds // expire automatically so the keyspace stays bounded
+      });
 
-      if (isDuplicate) {
+      if (claimed === null) {
+        // Key already existed — another worker already claimed or finished this event
         logger.info(`Duplicate event detected, skipping`, { event_id: eventId });
         consumerMetrics.consumerErrorsTotal.labels(topic, 'duplicate_skipped').inc();
-        // Still commit offset so we don't reprocess
+        // Commit the offset so we don't get redelivered
         await this.consumer!.commitOffsets([
-          {
-            topic,
-            partition,
-            offset: (parseInt(message.offset) + 1).toString()
-          }
+          { topic, partition, offset: (parseInt(message.offset) + 1).toString() }
         ]);
         return;
       }
@@ -251,9 +302,8 @@ export class KafkaConsumerService {
           // Call the user's handler function
           await handler(event, message.headers || {});
 
-          // Success! Mark as processed and exit retry loop
-          const ttlSeconds = 24 * 60 * 60; // Keep dedup key for 24 hours
-          await this.redisClient.setEx(dedupeKey, ttlSeconds, 'processed');
+          // Success! Mark dedup key as processed and exit retry loop
+          await this.redisClient.set(dedupeKey, 'processed', { EX: ttlSeconds });
 
           // Commit offset (tells Kafka we successfully processed this message)
           await this.consumer!.commitOffsets([
@@ -267,6 +317,9 @@ export class KafkaConsumerService {
           const processingTime = (Date.now() - startTime) / 1000;
           consumerMetrics.messagesConsumedTotal.labels(topic, this.groupId).inc();
           consumerMetrics.messageProcessingSeconds.labels(topic).observe(processingTime);
+
+          // Record timestamp so health checks can report last activity
+          await this.setLastProcessedTimestamp();
 
           logger.info('Message processed successfully', {
             event_id: eventId,
@@ -302,8 +355,8 @@ export class KafkaConsumerService {
       const reason = lastError instanceof Error ? lastError.message : 'Unknown error';
       await this.sendToDLQ(topic, event, partition, eventId, correlationId, reason);
 
-      // Mark as processed (don't retry anymore) and commit offset
-      await this.redisClient.setEx(dedupeKey, 24 * 60 * 60, 'dlq');
+      // Mark as dlq so we don't retry on next delivery
+      await this.redisClient.set(dedupeKey, 'dlq', { EX: ttlSeconds });
       await this.consumer!.commitOffsets([
         {
           topic,
@@ -323,8 +376,12 @@ export class KafkaConsumerService {
   }
 
   /**
-   * Send failed message to Dead Letter Queue topic
-   * DLQ topic naming: {original_topic}.dlq
+   * Publish a failed message to its Dead Letter Queue topic.
+   * DLQ topic naming convention: `{original_topic}.dlq`
+   * 
+   * Requires a producer to be injected via setDLQProducer() before start().
+   * If no producer is available the event is logged as a fallback so it is
+   * never silently dropped.
    */
   private async sendToDLQ(
     originalTopic: string,
@@ -334,25 +391,49 @@ export class KafkaConsumerService {
     correlationId: string,
     reason: string
   ): Promise<void> {
-    try {
-      const dlqTopic = `${originalTopic}.dlq`;
-      const dlqEvent = {
-        ...event,
-        original_topic: originalTopic,
-        dlq_reason: reason,
-        dlq_timestamp: new Date().toISOString(),
-        original_partition: partition
-      };
+    const dlqTopic = `${originalTopic}.dlq`;
+    const dlqEvent = {
+      ...event,
+      original_topic: originalTopic,
+      dlq_reason: reason,
+      dlq_timestamp: new Date().toISOString(),
+      original_partition: partition
+    };
 
-      // TODO: Use KafkaProducerService to publish to DLQ
-      // For now, just log that we sent it
-      logger.error(`Message sent to DLQ: ${dlqTopic}`, {
+    if (!this.dlqProducer) {
+      // No producer injected — log so the message isn't silently lost
+      logger.error('DLQ producer not set; event could not be published to DLQ', {
+        dlq_topic: dlqTopic,
         event_id: eventId,
         correlation_id: correlationId,
-        dlq_event: dlqEvent
+        reason
+      });
+      return;
+    }
+
+    try {
+      await this.dlqProducer.publishEvent(
+        dlqTopic,
+        dlqEvent,
+        event.integration_id || eventId // keep partition affinity where possible
+      );
+
+      logger.warn('Message published to DLQ', {
+        dlq_topic: dlqTopic,
+        event_id: eventId,
+        correlation_id: correlationId,
+        reason
       });
     } catch (error) {
-      logger.error('Failed to send to DLQ:', error);
+      // DLQ publish itself failed — log with full context so ops can recover manually
+      logger.error('Failed to publish message to DLQ', {
+        dlq_topic: dlqTopic,
+        event_id: eventId,
+        correlation_id: correlationId,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+        dlq_event: dlqEvent
+      });
     }
   }
 
@@ -360,12 +441,18 @@ export class KafkaConsumerService {
    * Gracefully stop consumer
    */
   async stop(): Promise<void> {
+    this.isRunning = false;
     if (this.consumer && this.isConnected) {
       await this.consumer.disconnect();
-      await this.redisClient.quit();
       this.isConnected = false;
-      this.isRunning = false;
       logger.info('Kafka consumer disconnected');
+    }
+    if (this.admin) {
+      await this.admin.disconnect();
+      this.admin = null;
+    }
+    if (this.redisClient.isOpen) {
+      await this.redisClient.quit();
     }
   }
 

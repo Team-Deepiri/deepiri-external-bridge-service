@@ -47,8 +47,8 @@ export class HealthCheckService {
     const timestamp = new Date().toISOString();
     
     try {
-      // Check producer
-      const producerHealthy = this.producerService.isProducerConnected();
+      // Check producer with a live connectivity probe (not just a boolean flag)
+      const producerHealthy = await this.producerService.isProducerConnected();
 
       // Check Redis
       let redisHealthy = false;
@@ -62,11 +62,15 @@ export class HealthCheckService {
         logger.warn('Redis health check failed:', error);
       }
 
-      // Check consumers
       const consumerHealthStatus: Record<string, any> = {};
+      let allConsumersHealthy = true;
+
       for (const [groupId, consumer] of this.consumerServices) {
         const status = consumer.getStatus();
         const lastProcessed = await consumer.getLastProcessedTimestamp();
+        const consumerOk = status.isConnected && status.isRunning;
+
+        if (!consumerOk) allConsumersHealthy = false;
 
         consumerHealthStatus[groupId] = {
           connected: status.isConnected,
@@ -76,7 +80,7 @@ export class HealthCheckService {
         };
       }
 
-      const overallHealthy = producerHealthy && redisHealthy;
+      const overallHealthy = producerHealthy && redisHealthy && allConsumersHealthy;
 
       const response: HealthCheckResponse = {
         status: overallHealthy ? 'healthy' : 'degraded',

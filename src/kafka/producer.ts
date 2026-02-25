@@ -50,6 +50,9 @@ export class KafkaProducerService {
   private kafka: Kafka;
   private producer: Producer | null = null;
   private isConnected = false;
+  // Timestamp of the last successful publish.  Used by isProducerConnected()
+  // to detect a broker that disconnected silently after init.
+  private lastSuccessfulPublishAt: number | null = null;
 
   constructor() {
     this.kafka = new Kafka({
@@ -73,7 +76,7 @@ export class KafkaProducerService {
   async init(): Promise<void> {
     try {
       this.producer = this.kafka.producer({
-        allowAutoTopicCreation: true,
+        allowAutoTopicCreation: false, // Topics must be pre-created; avoids accidental topic sprawl in production
         maxInFlightRequests: 5
       });
 
@@ -130,6 +133,7 @@ export class KafkaProducerService {
       // Record success metrics
       producerMetrics.messagesProducedTotal.labels(topic).inc();
       producerMetrics.publishLatencySeconds.labels(topic).observe(latency);
+      this.lastSuccessfulPublishAt = Date.now();
 
       logger.info(`Event published to ${topic}`, {
         event_id: event.event_id,
@@ -162,10 +166,28 @@ export class KafkaProducerService {
   }
 
   /**
-   * Check if producer is connected
+   * Check whether the producer is currently usable.
+   *
+   * A plain boolean flag is not enough: the flag is set to true at init time
+   * and never cleared if the broker disconnects unexpectedly.  Instead we
+   * send a lightweight metadata request so KafkaJS's own retry/reconnect
+   * machinery surfaces a live connectivity error when the broker is gone.
+   *
+   * The call is intentionally fire-and-forget from the health-check caller's
+   * perspective: we return false on any error rather than throwing.
    */
-  isProducerConnected(): boolean {
-    return this.isConnected;
+  async isProducerConnected(): Promise<boolean> {
+    if (!this.producer || !this.isConnected) return false;
+
+    try {
+      // getMetadata is a lightweight admin-style request that uses the
+      // existing producer connection without publishing any data.
+      await (this.producer as any).cluster.refreshMetadata();
+      return true;
+    } catch {
+      this.isConnected = false;
+      return false;
+    }
   }
 }
 
