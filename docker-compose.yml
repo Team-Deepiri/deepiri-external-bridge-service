@@ -1,0 +1,172 @@
+version: '3.9'
+
+services:
+  # Kafka broker with KRaft mode (no Zookeeper required)
+  # KRaft = Kafka Raft consensus, simpler single-broker setup for dev/testing
+  kafka:
+    image: confluentinc/cp-kafka:7.5.3
+    container_name: deepiri-kafka
+    environment:
+      # KRaft mode (Kafka Raft controller)
+      KAFKA_BROKER_ID: 1
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "true"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Cluster ID for KRaft (must be same for all brokers in a cluster)
+      CLUSTER_ID: MkQkCRk-TxCxhB7P7Jy6dA
+    ports:
+      - "9092:9092"        # External broker port (for local clients)
+      - "29092:29092"      # Internal broker port (for docker network)
+    healthcheck:
+      test: kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1
+      interval: 5s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - deepiri-network
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  # Redis for idempotency deduplication
+  redis:
+    image: redis:7-alpine
+    container_name: deepiri-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: redis-cli ping
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - deepiri-network
+    volumes:
+      - redis-data:/data
+
+  # API Service (Producer)
+  # Receives webhooks, publishes to Kafka, returns 202 Accepted
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: deepiri-api-service
+    environment:
+      NODE_ENV: production
+      PORT: 5006
+      KAFKA_BROKERS: kafka:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # OAuth / other config
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      EXTERNAL_BRIDGE_BASE_URL: ${EXTERNAL_BRIDGE_BASE_URL:-http://localhost:5006}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://auth-service:5001}
+    ports:
+      - "5006:5006"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: curl -f http://localhost:5006/health || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - deepiri-network
+    restart: unless-stopped
+    command: npm run start
+
+  # Worker Service (Consumer)
+  # Processes webhook and sync events from Kafka
+  # Can be scaled horizontally by running multiple instances with different WORKER_ID
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: deepiri-worker-service
+    environment:
+      NODE_ENV: production
+      WORKER_PORT: 5007
+      KAFKA_BROKERS: kafka:29092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - "5007:5007"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: curl -f http://localhost:5007/health || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - deepiri-network
+    restart: unless-stopped
+    command: npm run start:worker
+
+  # Optional: Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: deepiri-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - deepiri-network
+    depends_on:
+      - api
+      - worker
+    restart: unless-stopped
+
+  # Optional: Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: deepiri-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_USER: admin
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana-dashboard.json:/etc/grafana/provisioning/dashboards/deepiri-dashboard.json:ro
+    networks:
+      - deepiri-network
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  kafka-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  deepiri-network:
+    driver: bridge
