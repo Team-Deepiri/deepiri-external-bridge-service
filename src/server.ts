@@ -3,7 +3,7 @@ import express, { Express, Request, Response, ErrorRequestHandler } from 'expres
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
-import winston from 'winston';
+import { logger, secureLog } from '@deepiri/shared-utils';
 import cookieParser from 'cookie-parser';
 import routes from './index';
 import kafkaProducerService from './kafka/producer';
@@ -14,12 +14,6 @@ dotenv.config();
 
 const app: Express = express();
 const PORT: number = parseInt(process.env.PORT || '5006', 10);
-
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.json(),
-  transports: [new winston.transports.Console({ format: winston.format.simple() })]
-});
 
 app.use(helmet());
 app.use(cors());
@@ -61,7 +55,7 @@ app.get('/metrics', async (req: Request, res: Response) => {
 app.use('/', routes);
 
 const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
-  logger.error('External Bridge Service error:', err);
+  secureLog('error', 'External Bridge Service error:', err);
   res.status(500).json({ error: 'Internal server error' });
 };
 app.use(errorHandler);
@@ -84,6 +78,9 @@ const initializeServices = async (): Promise<boolean> => {
     return false;
   }
 };
+app.listen(PORT, () => {
+  secureLog('info', `External Bridge Service running on port ${PORT}`);
+});
 
 /**
  * Start server with async initialization
