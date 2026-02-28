@@ -1,20 +1,12 @@
 import crypto from 'crypto';
 import { Request, Response } from 'express';
 import axios from 'axios';
+import { createLogger, secureLog } from '@deepiri/shared-utils';
 import { v4 as uuidv4 } from 'uuid';
-import winston from 'winston';
 import { createClient, RedisClientType } from 'redis';
 import kafkaProducerService from './kafka/producer';
 
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.json(),
-  transports: [new winston.transports.Console({ format: winston.format.simple() })]
-});
-
-interface WebhookHandler {
-  (payload: any, headers: Record<string, string>): Promise<any>;
-}
+const logger = createLogger('webhook-service');
 
 // Stored in Redis as a JSON string; no longer held in process memory.
 interface WebhookHistoryEntry {
@@ -25,7 +17,6 @@ interface WebhookHistoryEntry {
 }
 
 class WebhookService {
-  private webhookHandlers: Map<string, WebhookHandler>;
   /**
    * Redis client used to persist webhook history across restarts.
    * The history list key is `webhook_history`.
@@ -34,7 +25,6 @@ class WebhookService {
   private redisClient: RedisClientType;
 
   constructor() {
-    this.webhookHandlers = new Map();
     this.redisClient = createClient({
       url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`
     }) as RedisClientType;
@@ -46,25 +36,14 @@ class WebhookService {
     );
   }
 
-  registerHandler(provider: string, handler: WebhookHandler): void {
-    this.webhookHandlers.set(provider, handler);
-    logger.info('Webhook handler registered', { provider });
-  }
-
   async receiveWebhook(req: Request, res: Response): Promise<void> {
-    const correlationId = uuidv4();
-    const eventId = uuidv4();
-    const { provider } = req.params;
-    const payload = req.body;
-    const headers = req.headers as Record<string, string>;
-    const startTime = Date.now();
-
     try {
-      logger.info('Webhook received', {
-        event_id: eventId,
-        correlation_id: correlationId,
-        provider
-      });
+      const startTime = Date.now();
+      const { provider } = req.params;
+      const payload = req.body;
+      const headers = req.headers as Record<string, string>;
+      const eventId = uuidv4();
+      const correlationId = uuidv4();
 
       // Validate webhook signature
       if (headers['x-signature'] && !this._verifySignature(provider, payload, headers['x-signature'])) {
@@ -82,7 +61,11 @@ class WebhookService {
         correlation_id: correlationId,
         provider: provider,
         provider_event_id: payload.id || `${provider}-${Date.now()}`,
-        provider_event_type: payload.type || headers['x-github-event'] || headers['x-trello-webhook-trigger'] || 'unknown',
+        provider_event_type:
+          payload.type ||
+          headers['x-github-event'] ||
+          headers['x-trello-webhook-trigger'] ||
+          'unknown',
         integration_id: integrationId,
         received_at: new Date().toISOString(),
         payload: payload,
@@ -91,15 +74,11 @@ class WebhookService {
 
       /**
        * KAFKA INTEGRATION PATTERN: Producer (non-blocking)
-       * 
+       *
        * We don't await the Kafka publish. This is the "fire-and-forget" pattern:
        * 1. Return 202 Accepted immediately to the webhook sender
        * 2. Publish to Kafka in the background
        * 3. If publish fails, it's logged but doesn't affect the HTTP response
-       * 
-       * Why? The webhook sender expects a quick response (< 5s usually).
-       * Our consumer workers will process the message from Kafka asynchronously.
-       * This decouples the webhook ingestion from processing.
        */
       kafkaProducerService
         .publishEvent('integration.webhook.received', kafkaEvent, integrationId)
@@ -110,7 +89,6 @@ class WebhookService {
             provider,
             error: error instanceof Error ? error.message : String(error)
           });
-          // Note: Can't change HTTP response here; already sent 202
         });
 
       // Persist to Redis (best-effort; don't fail the 202 if Redis is unavailable)
@@ -139,13 +117,8 @@ class WebhookService {
         processing_time_ms: processingTime
       });
     } catch (error: any) {
-      logger.error('Error receiving webhook:', error);
-      const statusCode = error.message?.includes('not supported') ? 400 : 500;
-      res.status(statusCode).json({
-        event_id: uuidv4(),
-        correlation_id: correlationId,
-        error: error.message || 'Webhook processing failed'
-      });
+      secureLog('error', 'Error receiving webhook:', error);
+      res.status(500).json({ error: error.message || 'Webhook processing failed' });
     }
   }
 
@@ -155,7 +128,7 @@ class WebhookService {
       const history = await this.getWebhookHistory(provider, 10);
       res.json({ provider, recentWebhooks: history });
     } catch (error: any) {
-      logger.error('Error getting status:', error);
+      secureLog('error', 'Error getting status:', error);
       res.status(500).json({ error: 'Failed to get status' });
     }
   }
@@ -173,13 +146,13 @@ class WebhookService {
       const baseUrl = process.env.EXTERNAL_BRIDGE_BASE_URL;
 
       if (!clientId) {
-        logger.error('GOOGLE_CLIENT_ID not configured');
+        secureLog('error', 'GOOGLE_CLIENT_ID not configured');
         res.status(500).json({ error: 'GOOGLE_CLIENT_ID environment variable is required' });
         return;
       }
 
       if (!baseUrl) {
-        logger.error('EXTERNAL_BRIDGE_BASE_URL not configured');
+        secureLog('error', 'EXTERNAL_BRIDGE_BASE_URL not configured');
         res.status(500).json({ error: 'EXTERNAL_BRIDGE_BASE_URL environment variable is required' });
         return;
       }
@@ -209,10 +182,10 @@ class WebhookService {
       authUrl.searchParams.set('prompt', 'consent');
       authUrl.searchParams.set('state', state);
 
-      logger.info('Redirecting to Google OAuth', { redirectUri });
+      secureLog('info', 'Redirecting to Google OAuth', { redirectUri });
       res.redirect(authUrl.toString());
     } catch (error: any) {
-      logger.error('Error initiating OAuth:', error);
+      secureLog('error', 'Error initiating OAuth:', error);
       res.status(500).json({ error: 'OAuth initiation failed' });
     }
   }
@@ -229,7 +202,7 @@ class WebhookService {
       const { code, state: queryState, error: oauthError } = req.query;
 
       if (oauthError) {
-        logger.error('Google OAuth error', { error: oauthError });
+        secureLog('error', 'Google OAuth error', { error: oauthError });
         res.status(400).json({ error: `OAuth error: ${oauthError}` });
         return;
       }
@@ -240,9 +213,9 @@ class WebhookService {
       }
 
       // Verify CSRF state
-      const cookieState = req.cookies?.oauth_state;
+      const cookieState = (req as any).cookies?.oauth_state;
       if (!cookieState || !queryState || cookieState !== queryState) {
-        logger.error('OAuth state mismatch - possible CSRF attack', {
+        secureLog('error', 'OAuth state mismatch - possible CSRF attack', {
           cookieState: !!cookieState,
           queryState: !!queryState
         });
@@ -256,18 +229,20 @@ class WebhookService {
       const clientId = process.env.GOOGLE_CLIENT_ID;
       const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
       const baseUrl = process.env.EXTERNAL_BRIDGE_BASE_URL;
-      
+
       // AUTH_SERVICE_URL: use env var or default to docker service hostname (not localhost)
       const authServiceUrl = process.env.AUTH_SERVICE_URL || 'http://auth-service:5001';
 
       if (!clientId || !clientSecret) {
-        logger.error('Google OAuth credentials not configured');
-        res.status(500).json({ error: 'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables are required' });
+        secureLog('error', 'Google OAuth credentials not configured');
+        res.status(500).json({
+          error: 'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables are required'
+        });
         return;
       }
 
       if (!baseUrl) {
-        logger.error('EXTERNAL_BRIDGE_BASE_URL not configured');
+        secureLog('error', 'EXTERNAL_BRIDGE_BASE_URL not configured');
         res.status(500).json({ error: 'EXTERNAL_BRIDGE_BASE_URL environment variable is required' });
         return;
       }
@@ -276,7 +251,7 @@ class WebhookService {
       const redirectUri = `${baseUrl}/oauth/google/callback`;
 
       // Exchange authorization code for tokens
-      logger.info('Exchanging authorization code for tokens');
+      secureLog('info', 'Exchanging authorization code for tokens');
       const tokenParams = new URLSearchParams({
         code,
         client_id: clientId,
@@ -298,39 +273,34 @@ class WebhookService {
       const { id_token } = tokenResponse.data;
 
       if (!id_token) {
-        logger.error('No id_token in token response');
+        secureLog('error', 'No id_token in token response');
         res.status(500).json({ error: 'Failed to obtain ID token from Google' });
         return;
       }
 
       // Forward id_token to auth-service
-      logger.info('Forwarding ID token to auth-service', { authServiceUrl });
-      const authResponse = await axios.post(`${authServiceUrl}/auth/google`, {
-        idToken: id_token
-      }, {
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
+      secureLog('info', 'Forwarding ID token to auth-service', { authServiceUrl });
+      const authResponse = await axios.post(
+        `${authServiceUrl}/auth/google`,
+        { idToken: id_token },
+        { headers: { 'Content-Type': 'application/json' } }
+      );
 
       // Return auth-service response to frontend
       res.json(authResponse.data);
     } catch (error: any) {
-      logger.error('Error handling OAuth callback:', error);
+      secureLog('error', 'Error handling OAuth callback:', error);
 
       // Clear state cookie on error
       res.clearCookie('oauth_state');
 
       if (error.response) {
-        // Forward error from auth-service if available
         const status = error.response.status || 500;
         const message = error.response.data?.error || error.message || 'OAuth callback failed';
         res.status(status).json({ error: message });
       } else if (error.request) {
-        // Network error (auth-service unreachable)
         res.status(503).json({ error: 'Auth service unavailable' });
       } else {
-        // Other error
         res.status(500).json({ error: 'OAuth callback failed' });
       }
     }
@@ -347,19 +317,6 @@ class WebhookService {
     await this.redisClient.lTrim(key, 0, 999); // keep newest 1 000
   }
 
-  /**
-   * NOTE: processWebhook / handleGitHubWebhook / handleNotionWebhook /
-   * handleTrelloWebhook have been intentionally removed from this class.
-   *
-   * receiveWebhook() publishes every inbound webhook straight to Kafka and
-   * returns 202 immediately — it never calls any provider-specific handler
-   * directly.  Provider-specific processing (GitHub, Notion, Trello …) is
-   * the responsibility of the Kafka consumer in worker.ts, which routes on
-   * `event.provider` inside handleWebhookEvent().  Keeping that logic in the
-   * HTTP layer would re-couple ingestion to processing, defeating the purpose
-   * of the async pipeline.
-   */
-
   private _verifySignature(provider: string, payload: any, signature: string): boolean {
     const secret = process.env[`${provider.toUpperCase()}_WEBHOOK_SECRET`];
     if (!secret) return true;
@@ -369,8 +326,6 @@ class WebhookService {
     const expectedSignature = `sha256=${digest}`;
 
     // timingSafeEqual requires both buffers to have the same byte-length.
-    // If they differ the signature is definitely wrong — return false rather
-    // than letting Node throw a RangeError.
     const sigBuf = Buffer.from(signature);
     const expBuf = Buffer.from(expectedSignature);
     if (sigBuf.length !== expBuf.length) return false;
@@ -382,13 +337,22 @@ class WebhookService {
    * Retrieve recent webhook history from Redis.
    * Returns entries in reverse-chronological order (newest first).
    */
-  async getWebhookHistory(provider: string | null = null, limit: number = 100): Promise<WebhookHistoryEntry[]> {
+  async getWebhookHistory(
+    provider: string | null = null,
+    limit: number = 100
+  ): Promise<WebhookHistoryEntry[]> {
     if (!this.redisClient.isOpen) return [];
 
     try {
       const raw = await this.redisClient.lRange('webhook_history', 0, 999);
       let entries: WebhookHistoryEntry[] = raw
-        .map(s => { try { return JSON.parse(s) as WebhookHistoryEntry; } catch { return null; } })
+        .map(s => {
+          try {
+            return JSON.parse(s) as WebhookHistoryEntry;
+          } catch {
+            return null;
+          }
+        })
         .filter((e): e is WebhookHistoryEntry => e !== null);
 
       if (provider) {

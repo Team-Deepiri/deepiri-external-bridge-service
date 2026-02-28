@@ -1,51 +1,52 @@
-# Multi-stage build for External Bridge Service
-# Supports both API (producer) and Worker (consumer) services
+# Build shared-utils
+FROM node:18-alpine AS shared-utils-builder
+WORKDIR /shared-utils
 
-# Stage 1: Dependencies
-FROM node:18-alpine AS dependencies
-WORKDIR /app
+COPY shared/deepiri-shared-utils/package.json ./
+COPY shared/deepiri-shared-utils/package-lock.json ./
+COPY shared/deepiri-shared-utils/tsconfig.json ./
+COPY shared/deepiri-shared-utils/src ./src
 
-COPY package.json package-lock.json ./
-RUN npm install --legacy-peer-deps --only=production
+RUN npm install --legacy-peer-deps \
+ && npm run build
 
-# Stage 2: Build source
-FROM node:18-alpine AS builder
-WORKDIR /app
+# ------------------------------
 
-COPY package.json package-lock.json tsconfig.json ./
-COPY src ./src
-
-# Install all dependencies (including devDependencies for build)
-RUN npm install --legacy-peer-deps
-
-# Build TypeScript
-RUN npm run build
-
-# Stage 3: Production image (multi-purpose)
-FROM node:18-alpine AS production
+FROM node:18-alpine
 WORKDIR /app
 
 RUN apk add --no-cache curl dumb-init bash
 
-# Copy package files
-COPY package.json package-lock.json ./
+# Copy K8s env loader scripts
+COPY --chown=root:root shared/scripts/load-k8s-env.sh /usr/local/bin/load-k8s-env.sh
+COPY --chown=root:root shared/scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/load-k8s-env.sh /usr/local/bin/docker-entrypoint.sh
 
-# Copy production dependencies
-COPY --from=dependencies /app/node_modules ./node_modules
+# Copy service package files
+COPY backend/deepiri-external-bridge-service/package.json ./
+COPY backend/deepiri-external-bridge-service/package-lock.json ./
 
-# Copy compiled JavaScript
-COPY --from=builder /app/dist ./dist
+# Copy built shared-utils
+COPY --from=shared-utils-builder /shared-utils /shared-utils
 
-# Create non-root user
+# SINGLE install step (this is the fix)
+RUN npm install --legacy-peer-deps file:/shared-utils \
+ && npm cache clean --force
+
+# Copy source
+COPY backend/deepiri-external-bridge-service/tsconfig.json ./
+COPY backend/deepiri-external-bridge-service/src ./src
+
+# Build
+RUN npm run build
+
+# Runtime user
 RUN addgroup -g 1001 -S nodejs \
  && adduser -S nodejs -u 1001 \
  && chown -R nodejs:nodejs /app
 
 USER nodejs
 
-# Expose both API and Worker ports
-EXPOSE 5006 5007
-
-# Default: start API service
-# Override with `npm run start:worker` for worker instances
-CMD ["npm", "run", "start"]
+EXPOSE 5006
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["/usr/bin/dumb-init", "--", "node", "dist/server.js"]
