@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { Request, Response } from 'express';
 import axios from 'axios';
-import { createLogger } from '@deepiri/shared-utils';
+import { createLogger, secureLog } from '@deepiri/shared-utils';
 
 const logger = createLogger('webhook-service');
 
@@ -27,7 +27,7 @@ class WebhookService {
 
   registerHandler(provider: string, handler: WebhookHandler): void {
     this.webhookHandlers.set(provider, handler);
-    logger.info('Webhook handler registered', { provider });
+    secureLog('info', 'Webhook handler registered', { provider });
   }
 
   async receiveWebhook(req: Request, res: Response): Promise<void> {
@@ -39,7 +39,7 @@ class WebhookService {
       const result = await this.processWebhook(provider, payload, headers);
       res.json({ success: true, result });
     } catch (error: any) {
-      logger.error('Error receiving webhook:', error);
+      secureLog('error', 'Error receiving webhook:', error);
       res.status(500).json({ error: error.message || 'Webhook processing failed' });
     }
   }
@@ -50,7 +50,7 @@ class WebhookService {
       const history = this.getWebhookHistory(provider, 10);
       res.json({ provider, recentWebhooks: history });
     } catch (error: any) {
-      logger.error('Error getting status:', error);
+      secureLog('error', 'Error getting status:', error);
       res.status(500).json({ error: 'Failed to get status' });
     }
   }
@@ -68,13 +68,13 @@ class WebhookService {
       const baseUrl = process.env.EXTERNAL_BRIDGE_BASE_URL;
 
       if (!clientId) {
-        logger.error('GOOGLE_CLIENT_ID not configured');
+        secureLog('error', 'GOOGLE_CLIENT_ID not configured');
         res.status(500).json({ error: 'GOOGLE_CLIENT_ID environment variable is required' });
         return;
       }
 
       if (!baseUrl) {
-        logger.error('EXTERNAL_BRIDGE_BASE_URL not configured');
+        secureLog('error', 'EXTERNAL_BRIDGE_BASE_URL not configured');
         res.status(500).json({ error: 'EXTERNAL_BRIDGE_BASE_URL environment variable is required' });
         return;
       }
@@ -104,10 +104,10 @@ class WebhookService {
       authUrl.searchParams.set('prompt', 'consent');
       authUrl.searchParams.set('state', state);
 
-      logger.info('Redirecting to Google OAuth', { redirectUri });
+      secureLog('info', 'Redirecting to Google OAuth', { redirectUri });
       res.redirect(authUrl.toString());
     } catch (error: any) {
-      logger.error('Error initiating OAuth:', error);
+      secureLog('error', 'Error initiating OAuth:', error);
       res.status(500).json({ error: 'OAuth initiation failed' });
     }
   }
@@ -124,7 +124,7 @@ class WebhookService {
       const { code, state: queryState, error: oauthError } = req.query;
 
       if (oauthError) {
-        logger.error('Google OAuth error', { error: oauthError });
+        secureLog('error', 'Google OAuth error', { error: oauthError });
         res.status(400).json({ error: `OAuth error: ${oauthError}` });
         return;
       }
@@ -137,7 +137,7 @@ class WebhookService {
       // Verify CSRF state
       const cookieState = req.cookies?.oauth_state;
       if (!cookieState || !queryState || cookieState !== queryState) {
-        logger.error('OAuth state mismatch - possible CSRF attack', {
+        secureLog('error', 'OAuth state mismatch - possible CSRF attack', {
           cookieState: !!cookieState,
           queryState: !!queryState
         });
@@ -156,13 +156,13 @@ class WebhookService {
       const authServiceUrl = process.env.AUTH_SERVICE_URL || 'http://auth-service:5001';
 
       if (!clientId || !clientSecret) {
-        logger.error('Google OAuth credentials not configured');
+        secureLog('error', 'Google OAuth credentials not configured');
         res.status(500).json({ error: 'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables are required' });
         return;
       }
 
       if (!baseUrl) {
-        logger.error('EXTERNAL_BRIDGE_BASE_URL not configured');
+        secureLog('error', 'EXTERNAL_BRIDGE_BASE_URL not configured');
         res.status(500).json({ error: 'EXTERNAL_BRIDGE_BASE_URL environment variable is required' });
         return;
       }
@@ -171,7 +171,7 @@ class WebhookService {
       const redirectUri = `${baseUrl}/oauth/google/callback`;
 
       // Exchange authorization code for tokens
-      logger.info('Exchanging authorization code for tokens');
+      secureLog('info', 'Exchanging authorization code for tokens');
       const tokenParams = new URLSearchParams({
         code,
         client_id: clientId,
@@ -193,13 +193,13 @@ class WebhookService {
       const { id_token } = tokenResponse.data;
 
       if (!id_token) {
-        logger.error('No id_token in token response');
+        secureLog('error', 'No id_token in token response');
         res.status(500).json({ error: 'Failed to obtain ID token from Google' });
         return;
       }
 
       // Forward id_token to auth-service
-      logger.info('Forwarding ID token to auth-service', { authServiceUrl });
+      secureLog('info', 'Forwarding ID token to auth-service', { authServiceUrl });
       const authResponse = await axios.post(`${authServiceUrl}/auth/google`, {
         idToken: id_token
       }, {
@@ -211,7 +211,7 @@ class WebhookService {
       // Return auth-service response to frontend
       res.json(authResponse.data);
     } catch (error: any) {
-      logger.error('Error handling OAuth callback:', error);
+      secureLog('error', 'Error handling OAuth callback:', error);
 
       // Clear state cookie on error
       res.clearCookie('oauth_state');
@@ -255,10 +255,10 @@ class WebhookService {
         this.webhookHistory.shift();
       }
 
-      logger.info('Webhook processed', { provider, success: !!result });
+      secureLog('info', 'Webhook processed', { provider, success: !!result });
       return result;
     } catch (error) {
-      logger.error('Error processing webhook:', error);
+      secureLog('error', 'Error processing webhook:', error);
       throw error;
     }
   }
@@ -275,11 +275,11 @@ class WebhookService {
         case 'push':
           return await this._handleGitHubPush(payload);
         default:
-          logger.warn('Unhandled GitHub event', { event });
+          secureLog('warn', 'Unhandled GitHub event', { event });
           return { processed: false, event };
       }
     } catch (error) {
-      logger.error('Error handling GitHub webhook:', error);
+      secureLog('error', 'Error handling GitHub webhook:', error);
       throw error;
     }
   }
@@ -292,7 +292,7 @@ class WebhookService {
         data: payload.data
       };
     } catch (error) {
-      logger.error('Error handling Notion webhook:', error);
+      secureLog('error', 'Error handling Notion webhook:', error);
       throw error;
     }
   }
@@ -310,7 +310,7 @@ class WebhookService {
           return { processed: false, type: action.type };
       }
     } catch (error) {
-      logger.error('Error handling Trello webhook:', error);
+      secureLog('error', 'Error handling Trello webhook:', error);
       throw error;
     }
   }
