@@ -1,14 +1,9 @@
-# Build shared-utils
 FROM node:18-alpine AS shared-utils-builder
 WORKDIR /shared-utils
-
-COPY shared/deepiri-shared-utils/package.json ./
-COPY shared/deepiri-shared-utils/package-lock.json ./
-COPY shared/deepiri-shared-utils/tsconfig.json ./
-COPY shared/deepiri-shared-utils/src ./src
-
-RUN npm install --legacy-peer-deps \
- && npm run build
+COPY platform-services/shared/deepiri-shared-utils/package.json ./
+COPY platform-services/shared/deepiri-shared-utils/tsconfig.json ./
+COPY platform-services/shared/deepiri-shared-utils/src ./src
+RUN npm install --legacy-peer-deps && npm run build
 
 # ------------------------------
 
@@ -18,24 +13,23 @@ WORKDIR /app
 RUN apk add --no-cache curl dumb-init bash
 
 # Copy K8s env loader scripts
-COPY --chown=root:root shared/scripts/load-k8s-env.sh /usr/local/bin/load-k8s-env.sh
-COPY --chown=root:root shared/scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY --chown=root:root platform-services/shared/scripts/load-k8s-env.sh /usr/local/bin/load-k8s-env.sh
+COPY --chown=root:root platform-services/shared/scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/load-k8s-env.sh /usr/local/bin/docker-entrypoint.sh
 
-# Copy service package files
-COPY backend/deepiri-external-bridge-service/package.json ./
-COPY backend/deepiri-external-bridge-service/package-lock.json ./
+COPY platform-services/backend/deepiri-external-bridge-service/package.json ./
+COPY platform-services/backend/deepiri-external-bridge-service/package-lock.json ./
 
-# Copy built shared-utils
-COPY --from=shared-utils-builder /shared-utils /shared-utils
+RUN node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));delete p.dependencies['@deepiri/shared-utils'];fs.writeFileSync('package.json',JSON.stringify(p,null,2))"
 
-# SINGLE install step (this is the fix)
-RUN npm install --legacy-peer-deps file:/shared-utils \
- && npm cache clean --force
+RUN npm install --legacy-peer-deps && npm cache clean --force
+
+COPY --from=shared-utils-builder /shared-utils/package.json /app/node_modules/@deepiri/shared-utils/package.json
+COPY --from=shared-utils-builder /shared-utils/dist /app/node_modules/@deepiri/shared-utils/dist
 
 # Copy source
-COPY backend/deepiri-external-bridge-service/tsconfig.json ./
-COPY backend/deepiri-external-bridge-service/src ./src
+COPY platform-services/backend/deepiri-external-bridge-service/tsconfig.json ./
+COPY platform-services/backend/deepiri-external-bridge-service/src ./src
 
 # Build
 RUN npm run build
