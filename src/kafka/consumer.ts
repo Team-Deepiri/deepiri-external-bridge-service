@@ -1,4 +1,4 @@
-import { Kafka, Consumer, Admin, logLevel } from 'kafkajs';
+import { Kafka, Consumer, Admin, logLevel, EachMessagePayload } from 'kafkajs';
 import { Counter, Histogram, Gauge } from 'prom-client';
 import { createClient } from 'redis';
 import winston from 'winston';
@@ -192,7 +192,7 @@ export class KafkaConsumerService {
           const topicHighWaterMarks = await this.admin!.fetchTopicOffsets(topicOffsets.topic);
 
           for (const partition of topicOffsets.partitions) {
-            const hwm = topicHighWaterMarks.find(p => p.partition === partition.partition);
+            const hwm = topicHighWaterMarks.find((p: { partition: number }) => p.partition === partition.partition);
 
             if (hwm) {
               const lag = Math.max(0, parseInt(hwm.offset) - parseInt(partition.offset));
@@ -210,7 +210,7 @@ export class KafkaConsumerService {
 
     try {
       await this.consumer.run({
-        eachMessage: async ({ topic, partition, message }) => {
+        eachMessage: async ({ topic, partition, message }: EachMessagePayload) => {
           // Apply concurrency limit: wait if too many active processes
           while (this.activeProcesses >= this.concurrencyLimit) {
             await new Promise(resolve => setTimeout(resolve, 50));
