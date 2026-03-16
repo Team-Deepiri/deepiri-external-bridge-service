@@ -26,7 +26,7 @@ class WebhookService {
 
   constructor() {
     this.redisClient = createClient({
-      url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`
+      url: `redis://:${process.env.REDIS_PASSWORD || ''}@${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`
     }) as RedisClientType;
 
     // Connect lazily — errors are caught per-operation so a Redis hiccup

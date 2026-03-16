@@ -180,9 +180,10 @@ export class KafkaProducerService {
     if (!this.producer || !this.isConnected) return false;
 
     try {
-      // getMetadata is a lightweight admin-style request that uses the
-      // existing producer connection without publishing any data.
-      await (this.producer as any).cluster.refreshMetadata();
+      const cluster = (this.producer as any).cluster;
+      if (cluster && typeof cluster.refreshMetadata === 'function') {
+        await cluster.refreshMetadata();
+      }
       return true;
     } catch {
       this.isConnected = false;
