@@ -71,10 +71,7 @@ app.use(errorHandler);
  */
 const initializeServices = async (): Promise<boolean> => {
   try {
-    // Only connect if the producer exposes connect(); otherwise it may be lazy
-    if (typeof (kafkaProducerService as any).connect === 'function') {
-      await (kafkaProducerService as any).connect();
-    }
+    await kafkaProducerService.init();
     return true;
   } catch (err) {
     logger.error('Kafka producer failed to initialize', {
@@ -83,9 +80,6 @@ const initializeServices = async (): Promise<boolean> => {
     return false;
   }
 };
-app.listen(PORT, () => {
-  secureLog('info', `External Bridge Service running on port ${PORT}`);
-});
 
 /**
  * Start server with async initialization
