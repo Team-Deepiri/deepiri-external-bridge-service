@@ -73,7 +73,7 @@ export class KafkaConsumerService {
   private consumer: Consumer | null = null;
   private admin: Admin | null = null;
   private redisClient = createClient({
-    url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`
+    url: `redis://:${process.env.REDIS_PASSWORD || ''}@${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`
   });
   private groupId: string;
   private handlers: Map<string, EventHandler> = new Map();

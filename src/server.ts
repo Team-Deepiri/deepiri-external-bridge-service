@@ -9,6 +9,7 @@ import routes from './index';
 import kafkaProducerService from './kafka/producer';
 import { HealthCheckService, MetricsService } from './kafka/health';
 import { validateBodyIfPresent } from './middleware/inputValidation';
+import { bodyParserConfig, requestSizeLimiter } from './middleware/requestLimits';
 
 dotenv.config();
 
@@ -18,7 +19,11 @@ const PORT: number = parseInt(process.env.PORT || '5006', 10);
 app.use(helmet());
 app.use(cors());
 app.use(cookieParser());
-app.use(express.json({ limit: '100kb' }));
+
+// Request size limits (Issue 8)
+app.use(requestSizeLimiter);
+app.use(express.json(bodyParserConfig.json));
+app.use(express.urlencoded(bodyParserConfig.urlencoded));
 app.use(validateBodyIfPresent());
 
 // PostgreSQL connection via Prisma (if needed for webhook/integration storage)
@@ -66,10 +71,7 @@ app.use(errorHandler);
  */
 const initializeServices = async (): Promise<boolean> => {
   try {
-    // Only connect if the producer exposes connect(); otherwise it may be lazy
-    if (typeof (kafkaProducerService as any).connect === 'function') {
-      await (kafkaProducerService as any).connect();
-    }
+    await kafkaProducerService.init();
     return true;
   } catch (err) {
     logger.error('Kafka producer failed to initialize', {
@@ -78,9 +80,6 @@ const initializeServices = async (): Promise<boolean> => {
     return false;
   }
 };
-app.listen(PORT, () => {
-  secureLog('info', `External Bridge Service running on port ${PORT}`);
-});
 
 /**
  * Start server with async initialization
