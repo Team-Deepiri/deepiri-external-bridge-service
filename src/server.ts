@@ -95,13 +95,7 @@ const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
     errorMessage: err instanceof Error ? err.message : 'Unknown error',
     stack: err instanceof Error ? err.stack : undefined,
   });
-
-  res.status(500).json({
-    success: false,
-    error: 'Internal server error',
-    requestId: (req as any).requestId || 'unknown',
-    timestamp: new Date().toISOString(),
-  });
+  res.status(500).json({ error: 'Internal server error' });
 };
 app.use(errorHandler);
 
