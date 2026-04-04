@@ -1,17 +1,3 @@
-# Build shared-utils
-FROM node:18-alpine AS shared-utils-builder
-WORKDIR /shared-utils
-
-COPY shared/deepiri-shared-utils/package.json ./
-COPY shared/deepiri-shared-utils/package-lock.json ./
-COPY shared/deepiri-shared-utils/tsconfig.json ./
-COPY shared/deepiri-shared-utils/src ./src
-
-RUN npm install --legacy-peer-deps \
- && npm run build
-
-# ------------------------------
-
 FROM node:18-alpine
 WORKDIR /app
 
@@ -25,13 +11,10 @@ RUN chmod +x /usr/local/bin/load-k8s-env.sh /usr/local/bin/docker-entrypoint.sh
 # Copy service package files
 COPY backend/deepiri-external-bridge-service/package.json ./
 COPY backend/deepiri-external-bridge-service/package-lock.json ./
+COPY backend/deepiri-external-bridge-service/.npmrc ./
 
-# Copy built shared-utils
-COPY --from=shared-utils-builder /shared-utils /shared-utils
-
-# SINGLE install step (this is the fix)
-RUN npm install --legacy-peer-deps file:/shared-utils \
- && npm cache clean --force
+# Install dependencies
+RUN npm ci --legacy-peer-deps && npm cache clean --force
 
 # Copy source
 COPY backend/deepiri-external-bridge-service/tsconfig.json ./
