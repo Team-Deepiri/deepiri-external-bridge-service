@@ -4,21 +4,21 @@ WORKDIR /app
 RUN apk add --no-cache curl dumb-init bash
 
 # Copy K8s env loader scripts
-COPY --chown=root:root shared/scripts/load-k8s-env.sh /usr/local/bin/load-k8s-env.sh
-COPY --chown=root:root shared/scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY --chown=root:root scripts/load-k8s-env.sh /usr/local/bin/load-k8s-env.sh
+COPY --chown=root:root scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/load-k8s-env.sh /usr/local/bin/docker-entrypoint.sh
 
 # Copy service package files
-COPY backend/deepiri-external-bridge-service/package.json ./
-COPY backend/deepiri-external-bridge-service/package-lock.json ./
-COPY backend/deepiri-external-bridge-service/.npmrc ./
+COPY package.json ./
+COPY package-lock.json ./
+COPY .npmrc ./
 
 # Install dependencies
 RUN npm ci --legacy-peer-deps && npm cache clean --force
 
 # Copy source
-COPY backend/deepiri-external-bridge-service/tsconfig.json ./
-COPY backend/deepiri-external-bridge-service/src ./src
+COPY tsconfig.json ./
+COPY src ./src
 
 # Build
 RUN npm run build
