@@ -15,10 +15,12 @@ COPY .npmrc ./
 
 # Install dependencies
 RUN --mount=type=secret,id=github_token \
-    echo "//npm.pkg.github.com/:_authToken=$(cat /run/secrets/github_token)" >> .npmrc && \
+    { echo "@deepiri:registry=https://npm.pkg.github.com"; \
+      echo "//npm.pkg.github.com/:_authToken=$(cat /run/secrets/github_token)"; \
+    } > .npmrc && \
     npm ci --legacy-peer-deps && \
     npm cache clean --force && \
-    sed -i '/_authToken/d' .npmrc
+    echo "@deepiri:registry=https://npm.pkg.github.com" > .npmrc
 
 # Copy source
 COPY tsconfig.json ./
