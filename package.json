@@ -10,7 +10,7 @@
     "test": "jest"
   },
   "dependencies": {
-    "@deepiri/shared-utils": "^1.0.0",
+    "@team-deepiri/shared-utils": "^1.0.0",
     "@prisma/client": "^5.7.0",
     "axios": "^1.8.4",
     "kafkajs": "^2.2.4",
