@@ -1,0 +1,17 @@
+name: deepiri-external-bridge-service-codeql-config
+
+# Focus analysis on maintained bridge runtime and script code.
+paths:
+  - src
+  - scripts
+  - shared
+  - run-performance-tests.sh
+
+# Exclude generated/build/runtime artifact paths.
+paths-ignore:
+  - '**/node_modules/**'
+  - '**/dist/**'
+  - '**/build/**'
+  - '**/coverage/**'
+  - '**/logs/**'
+  - '**/*.min.js'
