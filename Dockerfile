@@ -1,12 +1,4 @@
-FROM node:18-alpine
-WORKDIR /app
-
-RUN apk add --no-cache curl dumb-init bash
-
-# Copy K8s env loader scripts
-COPY --chown=root:root scripts/load-k8s-env.sh /usr/local/bin/load-k8s-env.sh
-COPY --chown=root:root scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/load-k8s-env.sh /usr/local/bin/docker-entrypoint.sh
+FROM ghcr.io/team-deepiri/deepiri-base:18-alpine
 
 # Copy service package files
 COPY package.json ./
@@ -29,10 +21,7 @@ COPY src ./src
 # Build
 RUN npm run build
 
-# Runtime user
-RUN addgroup -g 1001 -S nodejs \
- && adduser -S nodejs -u 1001 \
- && chown -R nodejs:nodejs /app
+RUN mkdir -p logs && chown -R nodejs:nodejs /app
 
 USER nodejs
 
