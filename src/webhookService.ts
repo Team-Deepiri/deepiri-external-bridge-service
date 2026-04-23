@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { Request, Response } from 'express';
 import axios from 'axios';
-import { createLogger, secureLog } from '@deepiri/shared-utils';
+import { createLogger, secureLog } from '@team-deepiri/shared-utils';
 import { v4 as uuidv4 } from 'uuid';
 import { createClient, RedisClientType } from 'redis';
 import kafkaProducerService from './kafka/producer';
