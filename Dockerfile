@@ -1,16 +1,23 @@
 FROM ghcr.io/team-deepiri/deepiri-base:18-alpine
 
+COPY shared/deepiri-shared-utils/package*.json /shared/deepiri-shared-utils/
+COPY shared/deepiri-shared-utils/tsconfig.json /shared/deepiri-shared-utils/
+COPY shared/deepiri-shared-utils/src /shared/deepiri-shared-utils/src
 # Copy service package files
 COPY backend/deepiri-external-bridge-service/package*.json ./
 
 # Install dependencies
-RUN --mount=type=secret,id=github_token \
-    { echo "@team-deepiri:registry=https://npm.pkg.github.com"; \
-      echo "//npm.pkg.github.com/:_authToken=$(cat /run/secrets/github_token)"; \
-    } > .npmrc \
+RUN node -e "const fs=require('fs'),lock=JSON.parse(fs.readFileSync('package-lock.json'));delete lock.packages['../../shared/deepiri-shared-utils'];delete lock.packages['node_modules/@team-deepiri/shared-utils'];fs.writeFileSync('package-lock.json',JSON.stringify(lock));" \
+ && cd /shared/deepiri-shared-utils \
  && npm ci --legacy-peer-deps \
- && npm cache clean --force \
- && echo "@team-deepiri:registry=https://npm.pkg.github.com" > .npmrc
+ && node -e "const fs=require('fs'),p=JSON.parse(fs.readFileSync('package.json'));delete p.scripts.prepare;fs.writeFileSync('package.json',JSON.stringify(p,null,2));" \
+ && rm -rf node_modules \
+ && cd /app \
+ && npm install --legacy-peer-deps \
+ && cd /shared/deepiri-shared-utils \
+ && npm ci --omit=dev --legacy-peer-deps \
+ && cd /app \
+ && npm cache clean --force
 
 # Copy source
 COPY backend/deepiri-external-bridge-service/tsconfig.json ./
