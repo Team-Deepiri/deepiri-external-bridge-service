@@ -142,8 +142,8 @@ class WebhookService {
         return;
       }
 
-      const clientId = process.env.GOOGLE_CLIENT_ID;
-      const baseUrl = process.env.EXTERNAL_BRIDGE_BASE_URL;
+      const clientId = process.env.GOOGLE_CLIENT_ID=123456789012-abc123def456gh789ijk012lmnopq345.apps.googleusercontent.com;
+      const baseUrl = process.env.EXTERNAL_BRIDGE_BASE_URL=http://localhost:5006;
 
       if (!clientId) {
         secureLog('error', 'GOOGLE_CLIENT_ID not configured');
