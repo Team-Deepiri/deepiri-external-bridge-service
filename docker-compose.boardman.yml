@@ -1,0 +1,102 @@
+services:
+  redis:
+    image: redis:7.2-alpine
+    container_name: boardman-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set} --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - boardman_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: boardman-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "Mvfv23irSXm93djf5t5WwA"
+    volumes:
+      - boardman_kafka_data:/var/lib/kafka/data
+
+  boardman-api:
+    build:
+      context: ../..
+      dockerfile: backend/deepiri-external-bridge-service/Dockerfile
+    image: deepiri-boardman-external-bridge:latest
+    container_name: boardman-api
+    restart: unless-stopped
+    env_file:
+      - path: .env.boardman.production
+        required: false
+    environment:
+      PORT: 5006
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BROKERS: kafka:9092
+    ports:
+      - "5006:5006"
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    command: node dist/server.js
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5006/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  boardman-worker:
+    image: deepiri-boardman-external-bridge:latest
+    container_name: boardman-worker
+    restart: unless-stopped
+    env_file:
+      - path: .env.boardman.production
+        required: false
+    environment:
+      WORKER_PORT: 5007
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BROKERS: kafka:9092
+    ports:
+      - "5007:5007"
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    command: node dist/worker.js
+    depends_on:
+      boardman-api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5007/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  boardman_redis_data:
+  boardman_kafka_data:

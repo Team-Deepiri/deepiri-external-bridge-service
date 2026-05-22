@@ -22,6 +22,8 @@ RUN node -e "const fs=require('fs'),lock=JSON.parse(fs.readFileSync('package-loc
  && npm cache clean --force
 
 COPY backend/deepiri-external-bridge-service/tsconfig.json ./
+COPY backend/deepiri-external-bridge-service/config ./config
+COPY backend/deepiri-external-bridge-service/scripts ./scripts
 COPY backend/deepiri-external-bridge-service/src ./src
 
 RUN npm run build

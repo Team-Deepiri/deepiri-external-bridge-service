@@ -18,6 +18,7 @@ import winston from 'winston';
 import { KafkaConsumerService } from './kafka/consumer';
 import { HealthCheckService, MetricsService } from './kafka/health';
 import kafkaProducerService from './kafka/producer';
+import { syncGithubWebhookToPlaky } from './boardman/githubWebhookSync';
 
 dotenv.config();
 
@@ -26,6 +27,59 @@ const logger = winston.createLogger({
   format: winston.format.json(),
   transports: [new winston.transports.Console({ format: winston.format.simple() })]
 });
+
+// Boardman worker contract: fail fast when required integration env vars
+// are missing so we never start in a partially configured state.
+const REQUIRED_BOARDMAN_ENV_VARS = [
+  'GITHUB_APP_ID',
+  'GITHUB_APP_PRIVATE_KEY',
+  'GITHUB_WEBHOOK_SECRET',
+  'GITHUB_INSTALLATION_ID',
+  'GITHUB_ORG',
+  'PLAKY_API_KEY',
+  'PLAKY_BASE_URL',
+  'PLAKY_WORKSPACE_ID',
+  'PLAKY_BOARD_ID',
+  'PLAKY_ITEM_GROUP_ID',
+  'PLAKY_FIELD_EXTERNAL_KEY_ID',
+  'PLAKY_FIELD_GITHUB_URL_ID',
+  'PLAKY_FIELD_REPO_ID',
+  'PLAKY_FIELD_STATUS_ID',
+  'PLAKY_FIELD_PR_URL_ID',
+  'PLAKY_FIELD_MERGE_STATE_ID',
+  'PLAKY_STATUS_OPEN_VALUE',
+  'PLAKY_STATUS_CLOSED_VALUE',
+  'PLAKY_MERGE_STATE_OPEN_VALUE',
+  'PLAKY_MERGE_STATE_MERGED_VALUE',
+  'PLAKY_MERGE_STATE_CLOSED_VALUE',
+  'PLAKY_MERGE_STATE_DRAFT_VALUE',
+  'ROUTE_SECRET'
+] as const;
+
+function isPlaceholderValue(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized.startsWith('your-') ||
+    normalized === 'change-me' ||
+    normalized === 'replace-me'
+  );
+}
+
+function validateBoardmanEnvOrExit(): void {
+  const missing = REQUIRED_BOARDMAN_ENV_VARS.filter((envVar) => {
+    const value = process.env[envVar];
+    if (!value || value.trim() === '') return true;
+    return isPlaceholderValue(value);
+  });
+
+  if (missing.length === 0) return;
+
+  logger.error('Missing required Boardman worker environment variables', {
+    missing,
+    hint: 'Populate .env/.env-k8s and mounted secrets before starting worker.'
+  });
+  process.exit(1);
+}
 
 /**
  * Example event handlers
@@ -43,7 +97,7 @@ const logger = winston.createLogger({
 async function handleWebhookEvent(event: Record<string, any>, headers: Record<string, string>): Promise<void> {
   const eventId = event.event_id;
   const correlationId = event.correlation_id;
-  const provider = event.provider;
+  const provider = String(event.provider || '').toLowerCase();
 
   logger.info('Processing webhook event', {
     event_id: eventId,
@@ -58,16 +112,41 @@ async function handleWebhookEvent(event: Record<string, any>, headers: Record<st
   // message is sent to the DLQ.
   switch (provider) {
     case 'github':
-      // TODO: implement GitHub webhook handling
-      // e.g. validate delivery HMAC, upsert PR/issue records, fire notifications
+      {
+        const syncResult = await syncGithubWebhookToPlaky(event);
+        if (syncResult.skipped) {
+          logger.info('Skipped GitHub webhook event', {
+            event_id: eventId,
+            correlation_id: correlationId,
+            reason: syncResult.reason,
+            action: syncResult.action,
+            linked_issue_keys: syncResult.linkedIssueKeys
+          });
+          break;
+        }
+
+        logger.info('GitHub Boardman sync completed', {
+          event_id: eventId,
+          correlation_id: correlationId,
+          plaky_item_id: syncResult.plakyItemId,
+          created: syncResult.created,
+          external_key: syncResult.externalKey,
+          action: syncResult.action,
+          linked_issue_keys: syncResult.linkedIssueKeys
+        });
+      }
       break;
     case 'notion':
-      // TODO: implement Notion webhook handling
-      // e.g. sync page/database updates into internal store
+      logger.info('Notion webhook handler not implemented yet; event acknowledged for future support', {
+        event_id: eventId,
+        correlation_id: correlationId
+      });
       break;
     case 'trello':
-      // TODO: implement Trello webhook handling
-      // e.g. mirror card moves / label changes to internal board model
+      logger.info('Trello webhook handler not implemented yet; event acknowledged for future support', {
+        event_id: eventId,
+        correlation_id: correlationId
+      });
       break;
     default:
       logger.warn('No handler registered for provider', { provider, event_id: eventId });
@@ -111,6 +190,8 @@ async function handleSyncEvent(event: Record<string, any>, headers: Record<strin
  * Main worker process
  */
 async function main() {
+  validateBoardmanEnvOrExit();
+
   const workerPort = parseInt(process.env.WORKER_PORT || '5007', 10);
   const app = express();
   app.use(express.json());

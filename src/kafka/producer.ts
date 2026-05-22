@@ -111,6 +111,12 @@ export class KafkaProducerService {
     }
 
     const startTime = Date.now();
+    const providerHeader = event.provider !== undefined ? String(event.provider) : 'unknown';
+    const providerEventIdHeader =
+      event.provider_event_id !== undefined ? String(event.provider_event_id) : 'unknown';
+    const providerEventTypeHeader =
+      event.provider_event_type !== undefined ? String(event.provider_event_type) : 'unknown';
+
     const record: ProducerRecord = {
       topic,
       messages: [
@@ -120,6 +126,9 @@ export class KafkaProducerService {
           headers: {
             'event_id': event.event_id || 'unknown',
             'correlation_id': event.correlation_id || 'unknown',
+            'provider': providerHeader,
+            'provider_event_id': providerEventIdHeader,
+            'provider_event_type': providerEventTypeHeader,
             'timestamp': new Date().toISOString()
           }
         }

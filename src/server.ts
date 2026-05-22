@@ -22,7 +22,13 @@ app.use(cookieParser());
 
 // Request size limits (Issue 8)
 app.use(requestSizeLimiter);
-app.use(express.json(bodyParserConfig.json));
+app.use(express.json({
+  ...bodyParserConfig.json,
+  verify: (req, _res, buf, encoding) => {
+    // Preserve the exact raw body for webhook signature validation.
+    (req as Request & { rawBody?: string }).rawBody = buf.toString((encoding || 'utf8') as BufferEncoding);
+  }
+}));
 app.use(express.urlencoded(bodyParserConfig.urlencoded));
 app.use(validateBodyIfPresent());
 

@@ -1,0 +1,10 @@
+defaults:
+  plaky_board_id: 100
+  plaky_group_id: 200
+  tier: 2
+
+repos:
+  Team-Deepiri/boardman:
+    plaky_board_id: 101
+    plaky_group_id: 201
+    tier: 1

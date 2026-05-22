@@ -53,6 +53,34 @@ export interface EventHandler {
   (event: Record<string, any>, headers: Record<string, string>): Promise<void>;
 }
 
+function normalizeDedupeToken(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim() !== '') return value.trim();
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+export function resolveEventDedupeIdentity(
+  event: Record<string, any>,
+  fallbackEventId: string
+): string {
+  const provider = normalizeDedupeToken(event.provider)?.toLowerCase() || 'unknown-provider';
+  const providerEventId = normalizeDedupeToken(event.provider_event_id);
+  if (providerEventId) {
+    return `provider:${provider}:${providerEventId}`;
+  }
+
+  const internalEventId = normalizeDedupeToken(event.event_id) || fallbackEventId || 'unknown-event';
+  return `internal:${internalEventId}`;
+}
+
+export function buildDedupeKey(
+  topic: string,
+  event: Record<string, any>,
+  fallbackEventId: string
+): string {
+  return `dedupe:${topic}:${resolveEventDedupeIdentity(event, fallbackEventId)}`;
+}
+
 /**
  * KafkaConsumerService
  * A robust consumer with:
@@ -265,14 +293,59 @@ export class KafkaConsumerService {
     });
 
     try {
-      const event = JSON.parse(message.value?.toString() || '{}');
+      const rawMessageValue = message.value?.toString() || '';
+      let event: Record<string, any>;
+
+      try {
+        const parsed = JSON.parse(rawMessageValue || '{}');
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('Webhook event payload must be a JSON object');
+        }
+        event = parsed as Record<string, any>;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'Invalid JSON payload';
+        logger.error('Invalid message payload, sending to DLQ', {
+          topic,
+          partition,
+          event_id: eventId,
+          correlation_id: correlationId,
+          reason
+        });
+
+        consumerMetrics.consumerErrorsTotal.labels(topic, 'invalid_json').inc();
+        await this.sendToDLQ(
+          topic,
+          { raw_payload: rawMessageValue },
+          partition,
+          eventId,
+          correlationId,
+          `invalid_json:${reason}`
+        );
+        consumerMetrics.dlqMessagesTotal.labels(topic, 'invalid_json').inc();
+        await this.consumer!.commitOffsets([
+          { topic, partition, offset: (parseInt(message.offset) + 1).toString() }
+        ]);
+        return;
+      }
 
       // Step 1: Atomic idempotency claim.
       // SET NX (set-if-not-exists) is a single atomic Redis command, which
       // eliminates the TOCTOU race that exists() + setEx() has when two
       // workers receive the same message simultaneously.
       const ttlSeconds = 24 * 60 * 60; // 24 hours
-      const dedupeKey = `dedupe:${topic}:${eventId}`;
+      const headerProvider = message.headers?.provider?.toString();
+      const headerProviderEventId = message.headers?.provider_event_id?.toString();
+      const dedupeSourceEvent: Record<string, any> = {
+        ...event,
+        provider: event.provider ?? headerProvider,
+        provider_event_id:
+          event.provider_event_id ??
+          (headerProviderEventId && headerProviderEventId !== 'unknown'
+            ? headerProviderEventId
+            : undefined)
+      };
+
+      const dedupeKey = buildDedupeKey(topic, dedupeSourceEvent, eventId);
       const claimed = await this.redisClient.set(dedupeKey, 'processing', {
         NX: true,      // only set if the key does not already exist
         EX: ttlSeconds // expire automatically so the keyspace stays bounded

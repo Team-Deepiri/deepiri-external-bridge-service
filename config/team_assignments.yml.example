@@ -1,0 +1,9 @@
+# QA roster for weighted auto-assignment on task creation.
+# Copy to team_assignments.yml and fill Plaky user ids.
+
+qa_assignees:
+  - name: Example QA
+    plaky_user_id: 0
+    github_login: example-qa
+    weight: 1.0
+    tiers: [1, 2, 3]

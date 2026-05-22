@@ -1,0 +1,15 @@
+# Canonical Boardman repo → Plaky placement map.
+# Copy to repos.yml and fill ids from Plaky after board reorg.
+
+defaults:
+  plaky_board_id: 0   # fallback when a repo is not listed (prefer listing every repo)
+  plaky_group_id: 0
+  tier: 2
+
+repos:
+  Team-Deepiri/deepiri-external-bridge-service:
+    plaky_board_id: 0
+    plaky_group_id: 0
+    tier: 2
+    category: Platform
+    plaky_table: Backlog

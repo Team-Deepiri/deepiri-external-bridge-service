@@ -41,30 +41,61 @@ class WebhookService {
       const startTime = Date.now();
       const { provider } = req.params;
       const payload = req.body;
-      const headers = req.headers as Record<string, string>;
+      const headers = req.headers as Record<string, string | string[] | undefined>;
       const eventId = uuidv4();
       const correlationId = uuidv4();
+      const providerLower = provider.toLowerCase();
 
-      // Validate webhook signature
-      if (headers['x-signature'] && !this._verifySignature(provider, payload, headers['x-signature'])) {
-        return void res.status(401).json({
-          event_id: eventId,
-          correlation_id: correlationId,
-          error: 'Invalid webhook signature'
-        });
+      let providerEventId: string | null = null;
+      let providerEventType: string | null = null;
+
+      // GitHub has stricter requirements: required headers + signed raw payload verification.
+      if (providerLower === 'github') {
+        const githubDeliveryId = this._getHeader(headers, 'x-github-delivery');
+        const githubEvent = this._getHeader(headers, 'x-github-event');
+        const githubSignature = this._getHeader(headers, 'x-hub-signature-256');
+
+        if (!githubDeliveryId || !githubEvent) {
+          return void res.status(400).json({
+            event_id: eventId,
+            correlation_id: correlationId,
+            error: 'Missing required GitHub webhook headers (x-github-delivery, x-github-event)'
+          });
+        }
+
+        if (!githubSignature || !this._verifyGithubSignature(req, githubSignature)) {
+          return void res.status(401).json({
+            event_id: eventId,
+            correlation_id: correlationId,
+            error: 'Invalid GitHub webhook signature'
+          });
+        }
+
+        providerEventId = githubDeliveryId;
+        providerEventType = githubEvent;
+      } else {
+        // Validate other provider signatures when x-signature is present.
+        const signature = this._getHeader(headers, 'x-signature');
+        if (signature && !this._verifySignature(provider, payload, signature)) {
+          return void res.status(401).json({
+            event_id: eventId,
+            correlation_id: correlationId,
+            error: 'Invalid webhook signature'
+          });
+        }
       }
 
       // Build event for Kafka
-      const integrationId = `${provider}_${payload.account_id || payload.organization_id || 'default'}`;
+      const integrationId = `${providerLower}_${payload.account_id || payload.organization_id || 'default'}`;
       const kafkaEvent = {
         event_id: eventId,
         correlation_id: correlationId,
-        provider: provider,
-        provider_event_id: payload.id || `${provider}-${Date.now()}`,
+        provider: providerLower,
+        provider_event_id: providerEventId || payload.id || `${providerLower}-${Date.now()}`,
         provider_event_type:
           payload.type ||
-          headers['x-github-event'] ||
-          headers['x-trello-webhook-trigger'] ||
+          providerEventType ||
+          this._getHeader(headers, 'x-trello-webhook-trigger') ||
           'unknown',
         integration_id: integrationId,
         received_at: new Date().toISOString(),
@@ -72,28 +103,40 @@ class WebhookService {
         source_ip: req.ip || 'unknown'
       };
 
-      /**
-       * KAFKA INTEGRATION PATTERN: Producer (non-blocking)
-       *
-       * We don't await the Kafka publish. This is the "fire-and-forget" pattern:
-       * 1. Return 202 Accepted immediately to the webhook sender
-       * 2. Publish to Kafka in the background
-       * 3. If publish fails, it's logged but doesn't affect the HTTP response
-       */
-      kafkaProducerService
-        .publishEvent('integration.webhook.received', kafkaEvent, integrationId)
-        .catch(error => {
-          logger.error('Failed to publish webhook to Kafka', {
+      // Publish before returning 202 so upstream systems can safely retry when
+      // Kafka is unavailable. This prevents silent message loss.
+      try {
+        await kafkaProducerService.publishEvent('integration.webhook.received', kafkaEvent, integrationId);
+      } catch (error) {
+        logger.error('Failed to publish webhook to Kafka', {
+          event_id: eventId,
+          correlation_id: correlationId,
+          provider: providerLower,
+          error: error instanceof Error ? error.message : String(error)
+        });
+
+        this.pushHistory({
+          provider: providerLower,
+          payload,
+          result: {
             event_id: eventId,
             correlation_id: correlationId,
-            provider,
-            error: error instanceof Error ? error.message : String(error)
-          });
+            status: 'queue_unavailable'
+          },
+          timestamp: new Date().toISOString()
+        }).catch(err => logger.warn('Failed to persist webhook history', { error: err?.message }));
+
+        return void res.status(503).json({
+          event_id: eventId,
+          correlation_id: correlationId,
+          status: 'retry',
+          error: 'Webhook queue temporarily unavailable'
         });
+      }
 
       // Persist to Redis (best-effort; don't fail the 202 if Redis is unavailable)
       this.pushHistory({
-        provider,
+        provider: providerLower,
         payload,
         result: { event_id: eventId, correlation_id: correlationId, status: 'queued' },
         timestamp: new Date().toISOString()
@@ -113,7 +156,7 @@ class WebhookService {
       logger.info('Webhook accepted and queued', {
         event_id: eventId,
         correlation_id: correlationId,
-        provider,
+        provider: providerLower,
         processing_time_ms: processingTime
       });
     } catch (error: any) {
@@ -315,6 +358,37 @@ class WebhookService {
     const key = 'webhook_history';
     await this.redisClient.lPush(key, JSON.stringify(entry));
     await this.redisClient.lTrim(key, 0, 999); // keep newest 1 000
+  }
+
+  private _getHeader(
+    headers: Record<string, string | string[] | undefined>,
+    key: string
+  ): string | null {
+    const value = headers[key.toLowerCase()];
+    if (Array.isArray(value)) return value[0] ?? null;
+    if (typeof value === 'string') return value;
+    return null;
+  }
+
+  private _verifyGithubSignature(req: Request, signature: string): boolean {
+    const secret = process.env.GITHUB_WEBHOOK_SECRET;
+    if (!secret) return true;
+
+    const rawBody = (req as Request & { rawBody?: string }).rawBody;
+    if (!rawBody) {
+      logger.warn('Missing raw request body for GitHub signature validation');
+      return false;
+    }
+
+    const hmac = crypto.createHmac('sha256', secret);
+    const expectedSignature = `sha256=${hmac.update(rawBody).digest('hex')}`;
+
+    // timingSafeEqual requires both buffers to have the same byte-length.
+    const sigBuf = Buffer.from(signature);
+    const expBuf = Buffer.from(expectedSignature);
+    if (sigBuf.length !== expBuf.length) return false;
+
+    return crypto.timingSafeEqual(sigBuf, expBuf);
   }
 
   private _verifySignature(provider: string, payload: any, signature: string): boolean {
