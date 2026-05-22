@@ -7,6 +7,51 @@ interface InstallationTokenResponse {
   expires_at: string;
 }
 
+interface GithubBlobResponse {
+  data?: {
+    repository?: {
+      object?: {
+        text?: string | null;
+        isBinary?: boolean;
+      } | null;
+    } | null;
+  };
+}
+
+const REPO_OWNER_OR_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/;
+const REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/;
+const DEFAULT_REF = 'HEAD';
+
+function parseRepoFullName(repoFullName: string): { owner: string; repo: string } {
+  const parts = repoFullName.trim().split('/');
+  if (parts.length !== 2) {
+    throw new Error(`Invalid repo full name: ${repoFullName}`);
+  }
+
+  const [owner, repo] = parts;
+  if (!REPO_OWNER_OR_NAME_PATTERN.test(owner) || !REPO_OWNER_OR_NAME_PATTERN.test(repo)) {
+    throw new Error(`Invalid repo full name: ${repoFullName}`);
+  }
+
+  return { owner, repo };
+}
+
+function normalizeRepoFilePath(filePath: string): string {
+  const normalized = filePath.trim().replace(/^\/+/, '');
+  if (!normalized || normalized.includes('..') || normalized.includes('\\') || normalized.length > 512) {
+    throw new Error(`Invalid repo file path: ${filePath}`);
+  }
+  return normalized;
+}
+
+function normalizeRef(ref?: string): string {
+  const normalized = ref?.trim() || DEFAULT_REF;
+  if (!REF_PATTERN.test(normalized) || normalized.includes('..')) {
+    throw new Error(`Invalid GitHub ref: ${ref}`);
+  }
+  return normalized;
+}
+
 export class GithubAppClient {
   private readonly appId: string;
   private readonly privateKey: string;
@@ -24,10 +69,9 @@ export class GithubAppClient {
   }
 
   async fetchRepoFileText(repoFullName: string, filePath: string, ref?: string): Promise<string | null> {
-    const [owner, repo] = repoFullName.split('/');
-    if (!owner || !repo) {
-      throw new Error(`Invalid repo full name: ${repoFullName}`);
-    }
+    const { owner, repo } = parseRepoFullName(repoFullName);
+    const normalizedPath = normalizeRepoFilePath(filePath);
+    const expression = `${normalizeRef(ref)}:${normalizedPath}`;
 
     const token = await this.getInstallationAccessToken();
     const http = axios.create({
@@ -40,16 +84,28 @@ export class GithubAppClient {
       timeout: 15000
     });
 
-    const response = await http.get<{ content?: string; encoding?: string }>(
-      `/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}`,
-      { params: ref ? { ref } : undefined }
-    );
+    const response = await http.post<GithubBlobResponse>('/graphql', {
+      query: `
+        query BoardmanRepoFile($owner: String!, $repo: String!, $expression: String!) {
+          repository(owner: $owner, name: $repo) {
+            object(expression: $expression) {
+              ... on Blob {
+                text
+                isBinary
+              }
+            }
+          }
+        }
+      `,
+      variables: { owner, repo, expression }
+    });
 
-    if (!response.data?.content || response.data.encoding !== 'base64') {
+    const blob = response.data?.data?.repository?.object;
+    if (!blob || blob.isBinary || typeof blob.text !== 'string') {
       return null;
     }
 
-    return Buffer.from(response.data.content, 'base64').toString('utf8');
+    return blob.text;
   }
 
   private async getInstallationAccessToken(): Promise<string> {
