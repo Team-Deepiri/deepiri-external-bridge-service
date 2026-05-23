@@ -1,13 +1,9 @@
 import { Kafka, Consumer, Admin, logLevel, EachMessagePayload } from 'kafkajs';
 import { Counter, Histogram, Gauge } from 'prom-client';
 import { createClient } from 'redis';
-import winston from 'winston';
+import { createLogger } from '@team-deepiri/shared-utils';
 
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.json(),
-  transports: [new winston.transports.Console({ format: winston.format.simple() })]
-});
+const logger = createLogger('external-bridge-service');
 
 /**
  * Prometheus metrics for consumer
