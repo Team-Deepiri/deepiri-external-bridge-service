@@ -21,18 +21,18 @@ app.use(helmet());
 app.use(cors());
 app.use(cookieParser());
 
-// Request size limits (Issue 8)
-app.use(requestSizeLimiter);
-app.use(express.json(bodyParserConfig.json));
-app.use(express.urlencoded(bodyParserConfig.urlencoded));
-app.use(validateBodyIfPresent());
-
 app.use((req: Request, res: Response, next) => {
   const requestId = req.headers['x-request-id'] as string || randomUUID();
   (req as any).requestId = requestId;
   res.setHeader('x-request-id', requestId);
   next();
 });
+
+// Request size limits (Issue 8)
+app.use(requestSizeLimiter);
+app.use(express.json(bodyParserConfig.json));
+app.use(express.urlencoded(bodyParserConfig.urlencoded));
+app.use(validateBodyIfPresent());
 
 app.use((req: Request, res: Response, next) => {
   const startTime = Date.now();
