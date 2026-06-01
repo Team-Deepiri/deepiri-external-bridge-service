@@ -72,9 +72,21 @@ export const validateBodyIfPresent = () => {
     };
 };
 
+const PROXY_HEADER_NAMES = new Set([
+    'x-forwarded-for',
+    'x-forwarded-host',
+    'x-forwarded-port',
+    'x-forwarded-proto',
+    'x-forwarded-prefix',
+    'x-forwarded-server',
+    'x-real-ip',
+    'x-amzn-trace-id',
+    'x-request-start',
+]);
+
 const isApplicationHeader = (headerName: string): boolean => {
     const normalizedHeaderName = headerName.toLowerCase();
-    return normalizedHeaderName === 'authorization' || normalizedHeaderName.startsWith('x-');
+    return normalizedHeaderName === 'authorization' || (normalizedHeaderName.startsWith('x-') && !PROXY_HEADER_NAMES.has(normalizedHeaderName));
 };
 
 const sanitizeValue = (value: unknown): unknown => {
