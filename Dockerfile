@@ -1,36 +1,22 @@
-# Build shared-utils
-FROM node:18-alpine AS shared-utils-builder
-WORKDIR /shared-utils
+FROM ghcr.io/team-deepiri/deepiri-suite:18-alpine
 
-COPY shared/deepiri-shared-utils/package.json ./
-COPY shared/deepiri-shared-utils/package-lock.json ./
-COPY shared/deepiri-shared-utils/tsconfig.json ./
-COPY shared/deepiri-shared-utils/src ./src
-
-RUN npm install --legacy-peer-deps \
- && npm run build
-
-# ------------------------------
-
-FROM node:18-alpine
-WORKDIR /app
-
-RUN apk add --no-cache curl dumb-init bash
-
-# Copy K8s env loader scripts
-COPY --chown=root:root shared/scripts/load-k8s-env.sh /usr/local/bin/load-k8s-env.sh
-COPY --chown=root:root shared/scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/load-k8s-env.sh /usr/local/bin/docker-entrypoint.sh
-
+COPY shared/deepiri-shared-utils/package*.json /shared/deepiri-shared-utils/
+COPY shared/deepiri-shared-utils/tsconfig.json /shared/deepiri-shared-utils/
+COPY shared/deepiri-shared-utils/src /shared/deepiri-shared-utils/src
 # Copy service package files
-COPY backend/deepiri-external-bridge-service/package.json ./
-COPY backend/deepiri-external-bridge-service/package-lock.json ./
+COPY backend/deepiri-external-bridge-service/package*.json ./
 
-# Copy built shared-utils
-COPY --from=shared-utils-builder /shared-utils /shared-utils
-
-# SINGLE install step (this is the fix)
-RUN npm install --legacy-peer-deps file:/shared-utils \
+# Install dependencies
+RUN node -e "const fs=require('fs'),lock=JSON.parse(fs.readFileSync('package-lock.json'));delete lock.packages['../../shared/deepiri-shared-utils'];delete lock.packages['node_modules/@team-deepiri/shared-utils'];fs.writeFileSync('package-lock.json',JSON.stringify(lock));" \
+ && cd /shared/deepiri-shared-utils \
+ && npm ci --legacy-peer-deps \
+ && node -e "const fs=require('fs'),p=JSON.parse(fs.readFileSync('package.json'));delete p.scripts.prepare;fs.writeFileSync('package.json',JSON.stringify(p,null,2));" \
+ && rm -rf node_modules \
+ && cd /app \
+ && npm install --legacy-peer-deps \
+ && cd /shared/deepiri-shared-utils \
+ && npm ci --omit=dev --legacy-peer-deps \
+ && cd /app \
  && npm cache clean --force
 
 # Copy source
@@ -40,10 +26,7 @@ COPY backend/deepiri-external-bridge-service/src ./src
 # Build
 RUN npm run build
 
-# Runtime user
-RUN addgroup -g 1001 -S nodejs \
- && adduser -S nodejs -u 1001 \
- && chown -R nodejs:nodejs /app
+RUN mkdir -p logs && chown -R nodejs:nodejs /app
 
 USER nodejs
 

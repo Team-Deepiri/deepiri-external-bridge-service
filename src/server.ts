@@ -3,7 +3,7 @@ import express, { Express, Request, Response, ErrorRequestHandler } from 'expres
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
-import { logger, secureLog } from '@deepiri/shared-utils';
+import { logger, secureLog } from '@team-deepiri/shared-utils';
 import cookieParser from 'cookie-parser';
 import { randomUUID } from 'crypto';
 import routes from './index';
