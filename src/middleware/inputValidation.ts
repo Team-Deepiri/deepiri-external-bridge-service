@@ -285,5 +285,9 @@ export const webhookPayloadValidator: RequestValidator = (req: Request): string 
         return 'Webhook payload must be a JSON object';
     }
 
+        if (Object.keys(req.body).length === 0) {
+            return 'Webhook payload must not be empty';
+        }
+
     return null;
 };
