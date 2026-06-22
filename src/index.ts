@@ -6,14 +6,14 @@ import {
     validateRequest,
     webhookPayloadValidator,
 } from './middleware/inputValidation';
-import { webhookRateLimitMiddleware } from './middleware/webhookRateLimit';
+import { providerRateLimitMiddleware } from './middleware/providerRateLimit';
 
 const router: Router = express.Router();
 
 // Webhook routes
 router.post(
     '/webhooks/:provider',
-    webhookRateLimitMiddleware,
+    providerRateLimitMiddleware,
     validateRequest({
         allowedHeaderFields: ['x-request-id', 'x-signature', 'x-github-event', 'x-api-key'],
         validators: [providerValidator, webhookPayloadValidator],
@@ -24,7 +24,7 @@ router.post(
 
 router.get(
     '/webhooks/:provider/status',
-    webhookRateLimitMiddleware,
+    providerRateLimitMiddleware,
     validateRequest({
         allowedHeaderFields: ['x-request-id', 'x-api-key'],
         validators: [providerValidator],
@@ -35,6 +35,7 @@ router.get(
 // OAuth routes
 router.get(
     '/oauth/:provider/authorize',
+    providerRateLimitMiddleware,
     validateRequest({
         allowedHeaderFields: ['x-request-id', 'x-api-key'],
         validators: [providerValidator],
@@ -44,6 +45,7 @@ router.get(
 
 router.get(
     '/oauth/:provider/callback',
+    providerRateLimitMiddleware,
     validateRequest({
         allowedQueryFields: ['code', 'state', 'error'],
         allowedHeaderFields: ['x-request-id', 'x-api-key'],

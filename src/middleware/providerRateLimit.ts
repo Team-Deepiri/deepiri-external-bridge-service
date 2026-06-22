@@ -4,8 +4,8 @@ import { createRedisClient, logger } from '@team-deepiri/shared-utils';
 const redis = createRedisClient();
 
 const RATE_LIMIT = {
-    windowMs: parseInt(process.env.WEBHOOK_RATE_LIMIT_WINDOW_MS || '60000', 10),
-    maxRequests: parseInt(process.env.WEBHOOK_RATE_LIMIT_MAX_REQUESTS || '100', 10),
+    windowMs: parseInt(process.env.PROVIDER_RATE_LIMIT_WINDOW_MS || '60000', 10),
+    maxRequests: parseInt(process.env.PROVIDER_RATE_LIMIT_MAX_REQUESTS || '100', 10),
 };
 
 interface RateLimitResult {
@@ -40,7 +40,7 @@ const getProviderIdentifier = (req: Request): string => {
 async function checkRateLimit(req: Request): Promise<RateLimitResult> {
     const provider = getProviderIdentifier(req);
     const clientId = getClientIdentifier(req);
-    const key = `ratelimit:webhook:${provider}:${clientId}`;
+    const key = `ratelimit:provider:${provider}:${clientId}`;
     const now = Date.now();
     const windowStart = now - RATE_LIMIT.windowMs;
 
@@ -65,7 +65,7 @@ async function checkRateLimit(req: Request): Promise<RateLimitResult> {
     };
 }
 
-export async function webhookRateLimitMiddleware(
+export async function providerRateLimitMiddleware(
     req: Request,
     res: Response,
     next: NextFunction
@@ -75,7 +75,7 @@ export async function webhookRateLimitMiddleware(
     try {
         rateLimit = await checkRateLimit(req);
     } catch (error) {
-        logger.warn('Webhook rate limit check failed; allowing request', {
+        logger.warn('Provider rate limit check failed; allowing request', {
             requestId: (req as any).requestId || 'unknown',
             path: req.originalUrl,
             method: req.method,
@@ -89,7 +89,7 @@ export async function webhookRateLimitMiddleware(
 
     if (!rateLimit.allowed) {
         res.setHeader('Retry-After', Math.ceil(RATE_LIMIT.windowMs / 1000));
-        res.status(429).json({ error: 'Too Many Requests: Webhook rate limit exceeded.' });
+        res.status(429).json({ error: 'Too Many Requests: Provider rate limit exceeded.' });
         return;
     }
 
