@@ -2,13 +2,9 @@ import { register } from 'prom-client';
 import { KafkaProducerService } from './producer';
 import { KafkaConsumerService } from './consumer';
 import { createClient, RedisClientType } from 'redis';
-import winston from 'winston';
+import { createLogger } from '@team-deepiri/shared-utils';
 
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.json(),
-  transports: [new winston.transports.Console({ format: winston.format.simple() })]
-});
+const logger = createLogger('external-bridge-service');
 
 /**
  * HealthCheckService

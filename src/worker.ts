@@ -14,18 +14,14 @@
 
 import dotenv from 'dotenv';
 import express, { Request, Response } from 'express';
-import winston from 'winston';
+import { createLogger } from '@team-deepiri/shared-utils';
 import { KafkaConsumerService } from './kafka/consumer';
 import { HealthCheckService, MetricsService } from './kafka/health';
 import kafkaProducerService from './kafka/producer';
 
 dotenv.config();
 
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.json(),
-  transports: [new winston.transports.Console({ format: winston.format.simple() })]
-});
+const logger = createLogger('external-bridge-service');
 
 /**
  * Example event handlers
