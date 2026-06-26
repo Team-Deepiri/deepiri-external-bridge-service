@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import dotenv from 'dotenv';
 import { logger, secureLog } from '@team-deepiri/shared-utils';
 import cookieParser from 'cookie-parser';
+import { randomUUID } from 'crypto';
 import routes from './index';
 import kafkaProducerService from './kafka/producer';
 import { HealthCheckService, MetricsService } from './kafka/health';
@@ -20,11 +21,37 @@ app.use(helmet());
 app.use(cors());
 app.use(cookieParser());
 
+app.use((req: Request, res: Response, next) => {
+  const requestId = req.headers['x-request-id'] as string || randomUUID();
+  (req as any).requestId = requestId;
+  res.setHeader('x-request-id', requestId);
+  next();
+});
+
 // Request size limits (Issue 8)
 app.use(requestSizeLimiter);
 app.use(express.json(bodyParserConfig.json));
 app.use(express.urlencoded(bodyParserConfig.urlencoded));
 app.use(validateBodyIfPresent());
+
+app.use((req: Request, res: Response, next) => {
+  const startTime = Date.now();
+
+  res.on('finish', () => {
+    const durationMs = Date.now() - startTime;
+    logger.info('HTTP request completed', {
+      requestId: (req as any).requestId || 'unknown',
+      method: req.method,
+      path: req.originalUrl,
+      statusCode: res.statusCode,
+      durationMs,
+      userAgent: req.get('user-agent') || 'unknown',
+      ip: req.ip,
+    });
+  });
+
+  next();
+});
 
 // PostgreSQL connection via Prisma (if needed for webhook/integration storage)
 // For now, external bridge primarily handles webhooks and API integrations
@@ -61,6 +88,13 @@ app.use('/', routes);
 
 const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
   secureLog('error', 'External Bridge Service error:', err);
+  logger.error('External Bridge Service error', {
+    requestId: (req as any).requestId || 'unknown',
+    method: req.method,
+    path: req.originalUrl,
+    errorMessage: err instanceof Error ? err.message : 'Unknown error',
+    stack: err instanceof Error ? err.stack : undefined,
+  });
   res.status(500).json({ error: 'Internal server error' });
 };
 app.use(errorHandler);
