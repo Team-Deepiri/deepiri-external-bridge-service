@@ -1,5 +1,5 @@
 # Bedd runtime (Bun-style) — musl binary for Alpine
-ARG BEDD_IMAGE=ghcr.io/team-deepiri/bedd:0.6
+ARG BEDD_IMAGE=ghcr.io/team-deepiri/bedd:0.8
 FROM ${BEDD_IMAGE} AS bedd
 
 FROM ghcr.io/team-deepiri/deepiri-suite:18-alpine
