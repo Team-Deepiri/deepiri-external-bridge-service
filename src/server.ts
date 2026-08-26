@@ -56,11 +56,15 @@ app.use((req: Request, res: Response, next) => {
 // PostgreSQL connection via Prisma (if needed for webhook/integration storage)
 // For now, external bridge primarily handles webhooks and API integrations
 
+// One long-lived instance, not one per request — HealthCheckService owns a
+// Redis client, and constructing it fresh on every /health call meant a new
+// Redis connection was opened (and never closed) on every single request.
+const healthCheckService = new HealthCheckService(kafkaProducerService);
+
 app.get('/health', async (req: Request, res: Response) => {
   // If Kafka health checker is available, use it; otherwise just respond healthy.
   try {
-    const healthCheck = new HealthCheckService(kafkaProducerService);
-    const health = await healthCheck.check();
+    const health = await healthCheckService.check();
     const statusCode = health.status === 'healthy' ? 200 : 503;
     return void res.status(statusCode).json(health);
   } catch {
@@ -103,7 +107,13 @@ app.use(errorHandler);
  * Initialize external services needed for API process.
  * Worker consumers run in a separate process (worker.ts).
  */
+const KAFKA_ENABLED = process.env.KAFKA_ENABLED !== 'false';
+
 const initializeServices = async (): Promise<boolean> => {
+  if (!KAFKA_ENABLED) {
+    logger.info('KAFKA_ENABLED=false — skipping Kafka producer init (webhook publishes will no-op via the existing fire-and-forget .catch)');
+    return true;
+  }
   try {
     await kafkaProducerService.init();
     return true;
