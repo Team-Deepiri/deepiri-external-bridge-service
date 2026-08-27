@@ -41,10 +41,15 @@ export class HealthCheckService {
    */
   async check(): Promise<HealthCheckResponse> {
     const timestamp = new Date().toISOString();
-    
+    const kafkaEnabled = process.env.KAFKA_ENABLED !== 'false';
+
     try {
-      // Check producer with a live connectivity probe (not just a boolean flag)
-      const producerHealthy = await this.producerService.isProducerConnected();
+      // Check producer with a live connectivity probe (not just a boolean flag).
+      // When Kafka is intentionally disabled (cloud profile — no broker exists
+      // at all), treat it as not-applicable rather than unhealthy, so the
+      // service doesn't report permanently degraded for a dependency it was
+      // never meant to have.
+      const producerHealthy = kafkaEnabled ? await this.producerService.isProducerConnected() : true;
 
       // Check Redis
       let redisHealthy = false;

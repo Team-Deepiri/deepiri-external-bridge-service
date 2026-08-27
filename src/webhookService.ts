@@ -5,6 +5,7 @@ import { createLogger, secureLog } from '@team-deepiri/shared-utils';
 import { v4 as uuidv4 } from 'uuid';
 import { createClient, RedisClientType } from 'redis';
 import kafkaProducerService from './kafka/producer';
+import beddRedactor from './beddRedactor';
 
 const logger = createLogger('webhook-service');
 
@@ -91,8 +92,11 @@ class WebhookService {
           });
         });
 
-      // Persist to Redis (best-effort; don't fail the 202 if Redis is unavailable)
-      this.pushHistory({
+      // Persist to Redis (best-effort; don't fail the 202 if Redis is unavailable).
+      // Payload is redacted first — third-party webhook bodies routinely carry
+      // access_token/client_secret/etc. and this history is queryable via
+      // GET /webhooks/:provider/status.
+      this.redactAndPushHistory({
         provider,
         payload,
         result: { event_id: eventId, correlation_id: correlationId, status: 'queued' },
@@ -310,6 +314,11 @@ class WebhookService {
    * Push one entry to the Redis-backed history list.
    * Keeps the list bounded to 1 000 entries via LTRIM.
    */
+  private async redactAndPushHistory(entry: WebhookHistoryEntry): Promise<void> {
+    const redactedPayload = await beddRedactor.redact(entry.payload);
+    await this.pushHistory({ ...entry, payload: redactedPayload });
+  }
+
   private async pushHistory(entry: WebhookHistoryEntry): Promise<void> {
     if (!this.redisClient.isOpen) return;
     const key = 'webhook_history';
