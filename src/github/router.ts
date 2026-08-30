@@ -2,9 +2,13 @@ import express, { Router, Request, Response } from 'express';
 import { createLogger } from '@team-deepiri/shared-utils';
 import { getGithubConfig, isGithubConfigured } from './config';
 import { getOverview, getMemberStats, getPullDetail, invalidate } from './service';
+import { githubApiRateLimitMiddleware } from '../middleware/providerRateLimit';
 
 const logger = createLogger('github-router');
 const router: Router = express.Router();
+
+// Every /github/* route is rate-limited per client.
+router.use(githubApiRateLimitMiddleware);
 
 const LOGIN_RE = /^[a-zA-Z0-9-]{1,39}$/;
 const REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
