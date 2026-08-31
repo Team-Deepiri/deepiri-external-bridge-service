@@ -79,6 +79,11 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return results;
 }
 
+// Fan-out caps for the per-repo and per-member GitHub REST calls. Kept low on
+// purpose: GitHub's secondary rate limit trips on too many concurrent requests
+// (and sooner for repeated calls to the same endpoint), so a full overview
+// refresh across ~15 repos stays well under that ceiling and never eats a 403
+// mid-scan. Bump cautiously and watch for `x-ratelimit`/secondary-limit 403s.
 const REPO_CONCURRENCY = 8;
 const REVIEW_SEARCH_CONCURRENCY = 5;
 

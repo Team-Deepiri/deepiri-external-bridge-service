@@ -1,19 +1,18 @@
 /**
- * Standalone smoke test for the GitHub module — no Express, no Kafka, no Redis.
+ * Standalone dev smoke test for the GitHub module — no Express, no Kafka, no
+ * Redis. Handy for checking real GitHub App credentials against a live
+ * installation without booting the service.
  *
- *   cd ~/dev/deepiri-external-bridge-service-gh
  *   # put GITHUB_APP_ID / GITHUB_APP_INSTALLATION_ID / GITHUB_APP_PRIVATE_KEY_BASE64
- *   # (+ optional GITHUB_ORG) in .env
- *   npx ts-node --transpile-only scripts/gh-smoke.ts [login1 login2 ...]
- *
- * Delete this file before opening the PR (or keep it — your call).
+ *   # (+ optional GITHUB_ORG) in .env at the repo root
+ *   npx ts-node --transpile-only scripts/dev/gh-smoke.ts [login1 login2 ...]
  */
 import * as dotenv from 'dotenv';
 dotenv.config();
 
-import { getGithubConfig } from '../src/github/config';
-import { getInstallationToken } from '../src/github/appAuth';
-import { getOverview } from '../src/github/service';
+import { getGithubConfig } from '../../src/github/config';
+import { getInstallationToken } from '../../src/github/appAuth';
+import { getOverview } from '../../src/github/service';
 
 async function main() {
   const cfg = getGithubConfig();
