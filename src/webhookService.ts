@@ -378,7 +378,7 @@ class WebhookService {
 
       return entries.slice(0, limit);
     } catch (err) {
-      logger.warn('Failed to fetch webhook history from Redis', { error: err?.message });
+      logger.warn('Failed to fetch webhook history from Redis', { error: (err as Error)?.message });
       return [];
     }
   }
