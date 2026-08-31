@@ -26,6 +26,12 @@ export class HealthCheckService {
     this.redisClient = createClient({
       url: `redis://:${process.env.REDIS_PASSWORD || ''}@${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`
     });
+    // An 'error' event with no listener is thrown by EventEmitter and kills the
+    // process. This client stays connected between /health calls, so a Redis
+    // restart (every deploy) would otherwise crash the service.
+    this.redisClient.on('error', (err) =>
+      logger.warn('HealthCheck: Redis client error (auto-reconnecting)', { error: err?.message })
+    );
   }
 
   /**
