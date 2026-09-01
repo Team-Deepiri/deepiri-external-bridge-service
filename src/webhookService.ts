@@ -34,8 +34,16 @@ class WebhookService {
       url: `redis://:${process.env.REDIS_PASSWORD || ''}@${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`
     }) as RedisClientType;
 
-    // Connect lazily — errors are caught per-operation so a Redis hiccup
-    // does not crash the webhook ingestion path.
+    // REQUIRED: node-redis re-emits every socket error as an 'error' event, and
+    // an 'error' event with no listener is thrown by EventEmitter — which kills
+    // the process. Redis is recreated on every deploy (new container/IP), so
+    // without this the whole service crash-loops each deploy. The client
+    // reconnects on its own; a dropped socket must only be a logged warning.
+    this.redisClient.on('error', (err) =>
+      logger.warn('WebhookService: Redis client error (auto-reconnecting)', { error: err?.message })
+    );
+
+    // .catch() here only covers the initial connect promise, not later errors.
     this.redisClient.connect().catch(err =>
       logger.error('WebhookService: Redis connection failed', { error: err?.message })
     );

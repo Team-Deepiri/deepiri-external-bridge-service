@@ -92,6 +92,13 @@ export class KafkaConsumerService {
     this.groupId = groupId;
     this.concurrencyLimit = concurrencyLimit;
 
+    // An 'error' event with no listener is thrown by EventEmitter and kills the
+    // process. Attach one so a dropped Redis socket (Redis is recreated on every
+    // deploy) is a logged warning the client recovers from, not a crash.
+    this.redisClient.on('error', (err) =>
+      logger.warn('KafkaConsumer: Redis client error (auto-reconnecting)', { error: err?.message })
+    );
+
     this.kafka = new Kafka({
       clientId: `external-bridge-consumer-${groupId}`,
       brokers: (process.env.KAFKA_BROKERS || 'localhost:9092').split(','),
