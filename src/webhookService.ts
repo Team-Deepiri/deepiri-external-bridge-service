@@ -6,8 +6,12 @@ import { v4 as uuidv4 } from 'uuid';
 import { createClient, RedisClientType } from 'redis';
 import kafkaProducerService from './kafka/producer';
 import beddRedactor from './beddRedactor';
+import { invalidate as invalidateGithubCache } from './github/service';
 
 const logger = createLogger('webhook-service');
+
+/** GitHub webhook event names that change open-PR / review state. */
+const GITHUB_PR_EVENTS = /^pull_request(_review(_comment|_thread)?)?$/;
 
 // Stored in Redis as a JSON string; no longer held in process memory.
 interface WebhookHistoryEntry {
@@ -51,11 +55,35 @@ class WebhookService {
       const { provider } = req.params;
       const payload = req.body;
       const headers = req.headers as Record<string, string>;
+      const rawBody: Buffer | undefined = (req as any).rawBody;
       const eventId = uuidv4();
       const correlationId = uuidv4();
 
-      // Validate webhook signature
-      if (headers['x-signature'] && !this._verifySignature(provider, payload, headers['x-signature'])) {
+      // Signature verification.
+      // GitHub: HMAC-SHA256 of the raw body, compared to X-Hub-Signature-256.
+      //   When GITHUB_WEBHOOK_SECRET is set, a missing or bad signature is
+      //   rejected. When it is not set we log once and accept — lets the
+      //   integration be enabled before the secret is provisioned.
+      if (provider === 'github') {
+        const secret = process.env.GITHUB_WEBHOOK_SECRET;
+        if (secret) {
+          if (!this._verifyGithubSignature(rawBody, headers['x-hub-signature-256'], secret)) {
+            secureLog('warn', 'Rejected GitHub webhook: invalid or missing X-Hub-Signature-256', {
+              event_id: eventId,
+              has_signature: Boolean(headers['x-hub-signature-256']),
+              has_raw_body: Boolean(rawBody),
+            });
+            return void res.status(401).json({
+              event_id: eventId,
+              correlation_id: correlationId,
+              error: 'Invalid webhook signature',
+            });
+          }
+        } else if (!this._warnedNoGithubSecret) {
+          this._warnedNoGithubSecret = true;
+          logger.warn('GITHUB_WEBHOOK_SECRET is not set — GitHub webhooks are accepted unverified');
+        }
+      } else if (headers['x-signature'] && !this._verifySignature(provider, payload, headers['x-signature'])) {
         return void res.status(401).json({
           event_id: eventId,
           correlation_id: correlationId,
@@ -99,6 +127,14 @@ class WebhookService {
             error: error instanceof Error ? error.message : String(error)
           });
         });
+
+      // Team GitHub activity is cached in Redis for the portal People page.
+      // Drop it whenever a PR or its reviews change so the next read is fresh.
+      if (provider === 'github' && GITHUB_PR_EVENTS.test(headers['x-github-event'] || '')) {
+        invalidateGithubCache().catch(err =>
+          logger.warn('Failed to invalidate GitHub cache after webhook', { error: err?.message })
+        );
+      }
 
       // Persist to Redis (best-effort; don't fail the 202 if Redis is unavailable).
       // Payload is redacted first — third-party webhook bodies routinely carry
@@ -332,6 +368,26 @@ class WebhookService {
     const key = 'webhook_history';
     await this.redisClient.lPush(key, JSON.stringify(entry));
     await this.redisClient.lTrim(key, 0, 999); // keep newest 1 000
+  }
+
+  /** One-shot guard so the "secret not set" warning isn't logged per request. */
+  private _warnedNoGithubSecret = false;
+
+  /**
+   * Verify GitHub's `X-Hub-Signature-256: sha256=<hex>` against an HMAC-SHA256
+   * of the exact received bytes. Fails closed on a missing header or raw body.
+   */
+  private _verifyGithubSignature(
+    rawBody: Buffer | undefined,
+    signatureHeader: string | undefined,
+    secret: string
+  ): boolean {
+    if (!rawBody || !signatureHeader) return false;
+    const digest = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+    const expected = `sha256=${digest}`;
+    const a = Buffer.from(signatureHeader);
+    const b = Buffer.from(expected);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
   }
 
   private _verifySignature(provider: string, payload: any, signature: string): boolean {
