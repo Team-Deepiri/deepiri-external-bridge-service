@@ -9,6 +9,12 @@ export const bodyParserConfig = {
   json: {
     limit: '1mb',
     strict: true,
+    // Keep the exact received bytes so webhook handlers can HMAC-verify against
+    // precisely what the sender signed (re-serialising the parsed JSON would not
+    // byte-match, e.g. GitHub's X-Hub-Signature-256).
+    verify: (req: any, _res: unknown, buf: Buffer) => {
+      req.rawBody = buf;
+    },
   },
   //only accept JSON data if it's smaller than 1MB
   urlencoded: {

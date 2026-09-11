@@ -41,3 +41,21 @@ export const providerRateLimitMiddleware = rateLimit({
         res.status(options.statusCode).json(options.message);
     },
 });
+
+// Per-client limiter for the GitHub team-activity read API. `/github/overview`
+// can fan out to hundreds of GitHub calls on a cache miss, so cap request
+// volume even though the gateway also rate-limits /api/integrations.
+export const githubApiRateLimitMiddleware = rateLimit({
+    windowMs: WINDOW_MS,
+    limit: MAX_REQUESTS,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: getClientIdentifier,
+    message: {
+        error: 'Too Many Requests: GitHub activity API rate limit exceeded.',
+    },
+    skip: (req) => req.method === 'OPTIONS',
+    handler: (req, res, _next, options) => {
+        res.status(options.statusCode).json(options.message);
+    },
+});
